@@ -1,0 +1,39 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/koseven-lsp
+
+# Test binaries
+*.test
+
+# Coverage output
+*.out
+*.coverprofile
+
+# Dependency directories
+# vendor/
+
+# Go workspace
+go.work
+go.work.sum
+
+# Environment
+.env
+
+# Per-project LSP cache
+.cache/koseven-ls/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
