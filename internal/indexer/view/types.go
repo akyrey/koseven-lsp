@@ -1,21 +1,27 @@
 package view
 
-import protocol "github.com/tliron/glsp/protocol_3_16"
+import (
+	protocol "github.com/tliron/glsp/protocol_3_16"
 
-// RootKind identifies which layer of the Koseven cascade a view belongs to.
-type RootKind int
-
-const (
-	RootApplication RootKind = iota // application/views/
-	RootModule                      // modules/<name>/views/
-	RootSystem                      // system/views/
+	"github.com/akyrey/koseven-lsp/internal/project"
 )
+
+// Re-export RootKind constants so callers can use view.RootApplication etc.
+// without a separate project import.
+const (
+	RootApplication = project.RootApplication
+	RootModule      = project.RootModule
+	RootSystem      = project.RootSystem
+)
+
+// RootKind is an alias for the project-level cascade kind.
+type RootKind = project.RootKind
 
 // ViewDefinition is a resolved view file on disk.
 type ViewDefinition struct {
-	Name       string   // logical name, e.g. "pages/about"
-	Path       string   // absolute path to views/pages/about.php
-	RootKind   RootKind
+	Name       string          // logical name, e.g. "pages/about"
+	Path       string          // absolute path to views/pages/about.php
+	RootKind   project.RootKind
 	RootOrder  int    // position in cascade; lower = higher priority
 	ModuleName string // "" for application/system roots; module name otherwise
 }
@@ -74,9 +80,9 @@ type PHPType struct {
 
 // ExposedVar is a variable made available inside the view scope at a call site.
 type ExposedVar struct {
-	Name   string        // variable name without leading $
-	Type   PHPType       // inferred; may be TypeUnknown
-	Source VarSource     // which API exposed it
+	Name   string         // variable name without leading $
+	Type   PHPType        // inferred; may be TypeUnknown
+	Source VarSource      // which API exposed it
 	Range  protocol.Range // location of the expression that set it
 }
 

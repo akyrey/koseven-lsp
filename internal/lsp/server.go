@@ -15,6 +15,7 @@ import (
 
 	"github.com/akyrey/koseven-lsp/internal/config"
 	"github.com/akyrey/koseven-lsp/internal/indexer/view"
+	"github.com/akyrey/koseven-lsp/internal/project"
 )
 
 // reindexDebounce is how long to wait after the last PHP file change before
@@ -145,9 +146,25 @@ func (s *Server) viewIndex() view.Index {
 // reindex rebuilds the view index and atomically swaps it in.
 func (s *Server) reindex(root string, cfg config.Config) {
 	s.log.Infof("koseven-lsp: indexing %s", root)
-	// Indexer implementation will live in internal/indexer/view/walk.go.
-	// For the scaffold this is a no-op placeholder.
-	s.log.Infof("koseven-lsp: indexing complete (stub — no index built yet)")
+
+	modules, err := project.ParseModules(root, cfg)
+	if err != nil {
+		s.log.Warningf("koseven-lsp: bootstrap parse: %v (continuing with no modules)", err)
+		modules = nil
+	}
+	s.log.Infof("koseven-lsp: found %d module(s)", len(modules))
+
+	idx, err := view.Walk(root, cfg, modules)
+	if err != nil {
+		s.log.Errorf("koseven-lsp: view walk: %v", err)
+		return
+	}
+	s.log.Infof("koseven-lsp: indexed %d view definition(s)", len(idx.AllDefinitions()))
+
+	s.mu.Lock()
+	s.viewIdx = idx
+	s.mu.Unlock()
+	s.log.Infof("koseven-lsp: indexing complete")
 }
 
 // startWatcher watches PHP files under the project for changes outside the
@@ -228,9 +245,35 @@ func (s *Server) watchLoop(w *fsnotify.Watcher, root string) {
 }
 
 func (s *Server) reindexFiles(root string, paths []string) {
-	// Per-file incremental reindex will be implemented alongside walk.go.
-	s.log.Infof("koseven-lsp: incremental reindex triggered for %d files (stub)", len(paths))
+	s.mu.RLock()
+	curr, cfg := s.viewIdx, s.cfg
+	s.mu.RUnlock()
+
+	concreteIdx, ok := curr.(*view.ViewIndex)
+	if !ok || concreteIdx == nil {
+		s.reindex(root, cfg)
+		return
+	}
+
+	next := concreteIdx
+	var failed bool
+	for _, path := range paths {
+		updated, err := view.ReindexFile(path, next)
+		if err != nil {
+			s.log.Errorf("koseven-lsp: reindex %s: %v", path, err)
+			failed = true
+			continue
+		}
+		next = updated
+	}
+	if !failed {
+		s.mu.Lock()
+		s.viewIdx = next
+		s.mu.Unlock()
+	}
+	s.log.Infof("koseven-lsp: incremental reindex complete (%d files)", len(paths))
 }
+
 
 func hasWatchExt(name string) bool {
 	for _, ext := range watchExts {

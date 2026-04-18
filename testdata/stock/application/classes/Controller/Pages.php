@@ -4,9 +4,9 @@ class Controller_Pages extends Controller {
 
     public function action_about()
     {
-        $user = ORM::factory('User')->find(1);
+        // Vars passed directly in the chain so the indexer can infer types.
         $view = View::factory('pages/about')
-            ->set('user', $user)
+            ->set('user', ORM::factory('User'))
             ->set('show_contact', TRUE)
             ->set('email', 'hello@example.com');
         $this->response->body($view);

@@ -4,11 +4,19 @@ A Go LSP server for the [Koseven](https://github.com/koseven/koseven) PHP framew
 
 Generic PHP language servers (Intelephense, Psalm) have no knowledge of Koseven's runtime conventions: cascading filesystem view resolution, `View::factory` variable injection, `ORM::factory` type mapping, or HMVC module overrides. This server understands those conventions and provides navigation that generic tools cannot.
 
-## Features (v0.1.0 — in progress)
+## Features
+
+### v0.1.0 (current)
 
 - **Go-to-definition on view names** — cursor on `'pages/about'` inside `View::factory('pages/about')` or `new View('pages/about', ...)` jumps to the resolved `.php` file. Returns all candidates when the same name exists in multiple modules (HMVC cascade).
-- **Find-references from a view file** — open `application/views/pages/about.php` and request references to see every `View::factory`, `new View`, and `Kohana::find_file('views', ...)` call that constructs it.
-- **Inferred view variables** — hover on a bare `$var` inside a view to see its inferred type and which call sites set it; `$` completion lists all variables exposed via `->set()`, `->bind()`, the factory array, magic `__set`, and `set_global`/`bind_global`.
+- **Find-references** — open `application/views/pages/about.php` and request references to see every `View::factory`, `new View`, and `Kohana::find_file('views', ...)` call that constructs it. Also works from a PHP file: cursor on a view name string returns all other call sites.
+- **Inferred view variables** — hover on `$var` inside a view to see its inferred type and originating call sites. `$` completion lists all variables exposed via `->set()`, `->bind()`, the factory second-argument array, `set_global`, and `bind_global`.
+- **Hover on view names** — cursor on a view name string shows the resolved file path, cascade order, and module for each candidate.
+- **Document symbols** — view files are listed as symbols so Neovim Telescope and similar fuzzy-finders can navigate to them.
+
+**Type inference** (inside `->set()` and factory arrays): string/int/float/bool/null literals are typed exactly; `new Foo()` → `Foo`; `ORM::factory('Member')` / `Model::factory('Member')` → `Model_Member`; `Foo::factory('Bar')` → `Foo_Bar`. Variables passed through assignments are not yet inferred (single-expression chains only).
+
+**Cascade awareness**: reads `application/bootstrap.php` to discover enabled modules and their load order. `Kohana::modules([...])` must be a static array literal (dynamic/conditional loading is not supported).
 
 ## Installation
 
@@ -75,14 +83,14 @@ missing_views = false
 cmd/koseven-lsp/    entry point
 internal/
   config/           koseven-ls.toml loader
-  indexer/view/     view index: definitions, usages, exposed vars
-  lsp/              LSP server, handlers, document store, URI helpers
+  indexer/view/     view index: Walk, ReindexFile, extract, types, Index interface
+  lsp/              LSP server, definition, references, hover, completion, handlers
   phpparse/         VKCOM php-parser wrapper
-  phputil/          AST helpers, FQN resolution, location types
-  project/          bootstrap.php reader, cascade root builder
+  phputil/          AST helpers (ArgExpr, ScalarStringVal, FQN, Location)
+  project/          bootstrap.php reader, cascade roots, module types
 testdata/
   stock/            minimal Koseven fixture (no modules)
-  hmvc/             HMVC fixture with overlapping view names across modules
+  hmvc/             HMVC fixture with cascading module overrides
 ```
 
 ## Development

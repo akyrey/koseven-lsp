@@ -81,6 +81,34 @@ func ClassNodeFQN(name ast.Vertex, fc *FileContext) FQN {
 	return FQN(string(fc.Namespace) + "\\" + short)
 }
 
+// ArgExpr returns the Expr field of an *ast.Argument node, or nil when the
+// vertex is not an Argument.
+func ArgExpr(v ast.Vertex) ast.Vertex {
+	a, ok := v.(*ast.Argument)
+	if !ok {
+		return nil
+	}
+	return a.Expr
+}
+
+// ScalarStringVal returns the unquoted content of a *ast.ScalarString node.
+// Single and double quoted strings are supported; heredoc/nowdoc return
+// ("", false). The ok return mirrors strconv conventions.
+func ScalarStringVal(node ast.Vertex) (string, bool) {
+	s, ok := node.(*ast.ScalarString)
+	if !ok {
+		return "", false
+	}
+	b := s.Value
+	if len(b) < 2 {
+		return string(b), true
+	}
+	if b[0] == '\'' || b[0] == '"' {
+		return string(b[1 : len(b)-1]), true
+	}
+	return "", false // heredoc / nowdoc
+}
+
 func joinNameParts(parts []ast.Vertex) string {
 	var b strings.Builder
 	for i, part := range parts {

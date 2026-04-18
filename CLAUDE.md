@@ -48,28 +48,32 @@ internal/
     config.go                       # Config struct + Load() + Defaults()
   indexer/view/
     types.go                        # ViewDefinition, ViewUsage, ExposedVar, PHPType, Index iface
-    index.go                        # ViewIndex struct implementing Index (TODO)
-    walk.go                         # Walk() — cold start index build (TODO)
-    extract.go                      # AST → ViewUsage / ExposedVar extraction (TODO)
-    resolve.go                      # viewName → []ViewDefinition cascade logic (TODO)
+    index.go                        # ViewIndex — concrete Index implementation + withoutFile()
+    walk.go                         # Walk() + ReindexFile() + discoverViews + extractDir
+    extract.go                      # extractVisitor + tryExtractChain + inferType
   lsp/
-    server.go                       # Server struct — owns all LSP state + lifecycle handlers
-    handlers.go                     # Definition, References, Hover, Completion, DocumentSymbol (stubs)
+    server.go                       # Server struct — reindex(), reindexFiles(), watcher
+    definition.go                   # textDocument/definition — viewNameFinder visitor
+    references.go                   # textDocument/references — view-file mode + string mode
+    hover.go                        # textDocument/hover — view hover + $var type hover
+    completion.go                   # textDocument/completion — $var list in view files
+    handlers.go                     # textDocument/documentSymbol (stub)
     documents.go                    # DocumentStore — in-memory cache with disk fallback
     uri.go                          # URIToPath, PathToURI, toLSPLocation, UTF-16 column math
   phpparse/
     parse.go                        # Bytes() + File() — shared PHP 8.1 parse helpers
   phputil/
     fqn.go                          # FQN type, UseMap, FileContext + Resolve()
-    ast.go                          # NameToString, ClassName, AddUsesToContext, ClassNodeFQN
+    ast.go                          # ArgExpr, ScalarStringVal, NameToString, ClassName, etc.
     location.go                     # Location type + FromPosition()
-  project/                          # TODO: bootstrap.go, roots.go, root.go
+  project/
+    module.go                       # RootKind, Module, ViewRoot types
+    bootstrap.go                    # ParseModules() — static Kohana::modules([...]) extraction
+    roots.go                        # BuildViewRoots(), PHPScanDirs()
 testdata/
   stock/                            # minimal Koseven: no modules, one view, one controller
-  hmvc/                             # HMVC: modules/blog/ overrides the same view name
+  hmvc/                             # HMVC: modules/blog/ + modules/auth/ with cascade overlap
 ```
-
-Files marked `(TODO)` are the next implementation targets.
 
 ## Koseven domain knowledge
 
@@ -170,6 +174,31 @@ swaps it atomically. Falls back to full reindex when the symbol table is absent.
 - **set_global/bind_global vars always surface in completion**: they are part of
   every view's effective scope. They are not flagged as "unset" in diagnostics.
 
+## Architecture details
+
+**Chain extraction deduplication**: `tryExtractChain` is called from `ExprStaticCall`,
+`ExprNew`, and `ExprMethodCall` visitors. DFS pre-order visits the outermost method
+call first. The first call that resolves to a view construction records the full
+chain in `seen[basePos]`; inner nodes see the key and skip. This means chained
+constructions (`View::factory()->set()->bind()`) are captured correctly.
+
+**Known limitation — split assignment**: `$view = View::factory('x'); $view->set('y', $z);`
+will NOT capture the `set` vars because `$view` is an `ExprVariable` at the `set`
+call site. Variable scope tracking is needed to fix this; planned for v0.2.x.
+
+**`ExprStaticCall.Call` vs `.Method`**: VKCOM parser uses `Call` (not `Method`) for
+the method name field of static calls (`View::factory`). Instance method calls
+(`ExprMethodCall`) use `Method`. This asymmetry has burned us once — guard against it.
+
+**`RootKind` lives in `project` package**: `view/types.go` re-exports the constants
+as aliases to avoid a circular import (`view → project` is fine; `project → view` is
+not since `view/walk.go` imports `project`).
+
+**`withoutFile` shares definition maps**: `ViewIndex.withoutFile(path)` returns a
+new index where `byName`/`byPath` are shared (definitions), only `usages` is
+filtered. This is safe because `ReindexFile` only updates usages; view file
+creation/deletion requires a full `Walk`.
+
 ## Open questions (to answer before next iteration)
 
 1. Is `application/bootstrap.php` always at that exact path, or should
@@ -182,3 +211,5 @@ swaps it atomically. Falls back to full reindex when the symbol table is absent.
 4. Should the index walk respect `.gitignore`, or walk everything under the
    known cascade roots only?
 5. Cache location — `.cache/koseven-ls/` in project root, or XDG cache dir?
+6. Variable scope tracking priority — how common is the split-assignment pattern
+   (`$view = View::factory(...); $view->set(...)`) in the real codebase?
