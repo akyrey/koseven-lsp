@@ -2,6 +2,8 @@ package lsp
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/VKCOM/php-parser/pkg/ast"
 	"github.com/VKCOM/php-parser/pkg/visitor"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/akyrey/koseven-lsp/internal/phpparse"
 	"github.com/akyrey/koseven-lsp/internal/phputil"
+	"github.com/akyrey/koseven-lsp/internal/project"
 )
 
 // PrepareRename handles textDocument/prepareRename.
@@ -240,6 +243,90 @@ func (v *renameVisitor) ExprNew(n *ast.ExprNew) {
 	if len(n.Args) > 0 {
 		v.addEditIfMatch(phputil.ArgExpr(n.Args[0]))
 	}
+}
+
+// ─── workspace/willRenameFiles ────────────────────────────────────────────────
+
+// WillRenameFiles handles workspace/willRenameFiles.
+// When the user renames a view file in their file manager (nvim-tree, etc.),
+// the editor sends this notification before performing the rename. We return
+// a WorkspaceEdit that updates all View::factory / new View /
+// Kohana::find_file('views',...) string literals referencing the old view name.
+// The physical file rename itself is handled by the editor — we only update
+// string references.
+func (s *Server) WillRenameFiles(_ *glsp.Context, p *protocol.RenameFilesParams) (*protocol.WorkspaceEdit, error) {
+	idx := s.viewIndex()
+	if idx == nil {
+		return nil, nil
+	}
+	root, cfg, modules := s.cascadeState()
+	if root == "" {
+		return nil, nil
+	}
+	viewRoots := project.BuildViewRoots(root, cfg, modules)
+
+	changes := make(map[protocol.DocumentUri][]protocol.TextEdit)
+
+	for _, fr := range p.Files {
+		oldPath := URIToPath(protocol.DocumentUri(fr.OldURI))
+		newPath := URIToPath(protocol.DocumentUri(fr.NewURI))
+
+		oldNames := idx.NamesForFile(oldPath)
+		if len(oldNames) == 0 {
+			continue // not a tracked view file
+		}
+
+		newName := viewNameFromPath(newPath, viewRoots)
+		if newName == "" {
+			continue // can't determine target view name — skip safely
+		}
+
+		for _, oldName := range oldNames {
+			if oldName == newName {
+				continue
+			}
+			seen := make(map[string]bool)
+			for _, u := range idx.UsagesOf(oldName) {
+				if seen[u.File] {
+					continue
+				}
+				seen[u.File] = true
+
+				fileSrc, _ := s.docs.Read(PathToURI(u.File))
+				if fileSrc == nil {
+					fileSrc, _ = os.ReadFile(u.File)
+				}
+				if fileSrc == nil {
+					continue
+				}
+				edits := collectViewRenameEdits(fileSrc, u.File, oldName, newName)
+				if len(edits) > 0 {
+					uri := PathToURI(u.File)
+					changes[uri] = append(changes[uri], edits...)
+				}
+			}
+		}
+	}
+
+	if len(changes) == 0 {
+		return nil, nil
+	}
+	return &protocol.WorkspaceEdit{Changes: changes}, nil
+}
+
+// viewNameFromPath returns the logical view name for an absolute file path by
+// finding which view root it lives under and computing the path relative to
+// that root (with forward slashes, no .php extension).
+// Returns "" when the path is not under any known view root.
+func viewNameFromPath(filePath string, viewRoots []project.ViewRoot) string {
+	for _, vr := range viewRoots {
+		rel, err := filepath.Rel(vr.Path, filePath)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		return filepath.ToSlash(strings.TrimSuffix(rel, ".php"))
+	}
+	return ""
 }
 
 // addEditIfMatch checks whether expr is a string literal matching oldName and,

@@ -79,6 +79,15 @@ func (s *Server) Initialize(_ *glsp.Context, p *protocol.InitializeParams) (any,
 			RenameProvider: &protocol.RenameOptions{
 				PrepareProvider: boolPtr(true),
 			},
+			Workspace: &protocol.ServerCapabilitiesWorkspace{
+				FileOperations: &protocol.ServerCapabilitiesWorkspaceFileOperations{
+					WillRename: &protocol.FileOperationRegistrationOptions{
+						Filters: []protocol.FileOperationFilter{
+							{Pattern: protocol.FileOperationPattern{Glob: "**/*.php"}},
+						},
+					},
+				},
+			},
 		},
 		ServerInfo: &protocol.InitializeResultServerInfo{
 			Name:    "koseven-lsp",

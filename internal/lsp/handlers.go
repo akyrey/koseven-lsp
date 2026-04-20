@@ -6,9 +6,9 @@ import (
 )
 
 // DocumentSymbol handles textDocument/documentSymbol.
-// For view files, lists the view name as a document symbol so fuzzy-finders
-// can navigate to it. Full implementation (listing nested View::factory calls
-// inside views) is deferred to a future iteration.
+// For view files, returns the view name as a File symbol with all inferred
+// variables as Variable child symbols (visible in Neovim Telescope, VS Code
+// outline, and similar tools). Returns nil for non-view PHP files.
 func (s *Server) DocumentSymbol(_ *glsp.Context, p *protocol.DocumentSymbolParams) (any, error) {
 	idx := s.viewIndex()
 	if idx == nil {
@@ -21,16 +21,34 @@ func (s *Server) DocumentSymbol(_ *glsp.Context, p *protocol.DocumentSymbolParam
 		return nil, nil
 	}
 
-	kind := protocol.SymbolKindFile
+	fileKind := protocol.SymbolKindFile
+	varKind := protocol.SymbolKindVariable
+	emptyRange := protocol.Range{}
+
 	syms := make([]protocol.DocumentSymbol, 0, len(names))
 	for _, name := range names {
-		n := name // copy
-		syms = append(syms, protocol.DocumentSymbol{
-			Name:  n,
-			Kind:  kind,
-			Range: protocol.Range{},
-			SelectionRange: protocol.Range{},
-		})
+		vars := idx.VarsFor(name)
+		children := make([]protocol.DocumentSymbol, 0, len(vars))
+		for _, v := range vars {
+			detail := formatPHPType(v.Type)
+			children = append(children, protocol.DocumentSymbol{
+				Name:           "$" + v.Name,
+				Kind:           varKind,
+				Detail:         &detail,
+				Range:          emptyRange,
+				SelectionRange: emptyRange,
+			})
+		}
+		sym := protocol.DocumentSymbol{
+			Name:           name,
+			Kind:           fileKind,
+			Range:          emptyRange,
+			SelectionRange: emptyRange,
+		}
+		if len(children) > 0 {
+			sym.Children = children
+		}
+		syms = append(syms, sym)
 	}
 	return syms, nil
 }

@@ -69,6 +69,13 @@ func (s *Server) Definition(_ *glsp.Context, p *protocol.DefinitionParams) (any,
 		}
 	}
 
+	// Pattern 4: Kohana::message('file', ...) — cursor on the file-name arg.
+	if msgFile := findKohanaMessageAtOffset(src, path, offset); msgFile != "" {
+		if locs := cascadeLocs(root, cfg, modules, "messages", msgFile+".php"); len(locs) > 0 {
+			return locs, nil
+		}
+	}
+
 	return nil, nil
 }
 
@@ -282,4 +289,55 @@ func (v *findFileFinder) ExprStaticCall(n *ast.ExprStaticCall) {
 	} else {
 		v.relPath = name + ".php"
 	}
+}
+
+// ─── Kohana::message finder ───────────────────────────────────────────────────
+
+// findKohanaMessageAtOffset returns the message file name when the cursor is on
+// the first argument of Kohana::message('file', ...). The caller resolves it
+// against the messages/ cascade directory.
+func findKohanaMessageAtOffset(src []byte, path string, offset int) string {
+	root, err := phpparse.Bytes(src, path)
+	if err != nil || root == nil {
+		return ""
+	}
+	mf := &messageFinder{offset: offset}
+	traverser.NewTraverser(mf).Traverse(root)
+	return mf.msgFile
+}
+
+type messageFinder struct {
+	visitor.Null
+	offset  int
+	msgFile string
+}
+
+func (v *messageFinder) ExprStaticCall(n *ast.ExprStaticCall) {
+	if v.msgFile != "" {
+		return
+	}
+	className := phputil.NameToString(n.Class)
+	if className != "Kohana" && className != "\\Kohana" {
+		return
+	}
+	methodID, ok := n.Call.(*ast.Identifier)
+	if !ok || string(methodID.Value) != "message" {
+		return
+	}
+	if len(n.Args) == 0 {
+		return
+	}
+	expr := phputil.ArgExpr(n.Args[0])
+	if expr == nil {
+		return
+	}
+	pos := expr.GetPosition()
+	if pos == nil || v.offset < pos.StartPos || v.offset >= pos.EndPos {
+		return
+	}
+	name, ok := phputil.ScalarStringVal(expr)
+	if !ok || name == "" {
+		return
+	}
+	v.msgFile = name
 }

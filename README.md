@@ -15,6 +15,9 @@ Generic PHP language servers (Intelephense, Psalm) have no knowledge of Koseven'
 - **Document symbols + workspace symbols** — view files are listed as symbols for `textDocument/documentSymbol` and `workspace/symbol`. Neovim Telescope fuzzy-finder works out of the box.
 - **Missing-view diagnostic** *(opt-in)* — set `diagnostics.missing_views = true` in `koseven-ls.toml` to get a Warning when `View::factory('name')` resolves to no file. Off by default to avoid noise during renames and file moves.
 - **Rename view names** — `grw` (or your editor's rename keybind) on any view name string updates every `View::factory`, `new View`, and `Kohana::find_file('views',...)` call across the project. The physical `.php` view file itself is not renamed automatically — do that in your file manager, then rename the string references here.
+- **File-rename integration** (`workspace/willRenameFiles`) — when you rename a view file via nvim-tree or another LSP-aware file manager, all string references update atomically before the file rename completes. No string is left pointing at the old path.
+- **`Kohana::message('file', ...)` go-to-def** — cursor on the file name argument jumps to `messages/file.php` in the cascade.
+- **Document symbols with variable list** — `:Telescope lsp_document_symbols` (or equivalent) inside a view file shows the view name with all its exposed variables as children, including inferred types.
 
 **Type inference** (inside `->set()` and factory arrays): string/int/float/bool/null literals are typed exactly; `new Foo()` → `Foo`; `ORM::factory('Member')` / `Model::factory('Member')` → `Model_Member`; `Foo::factory('Bar')` → `Foo_Bar`. Variables passed through assignments are not yet inferred (single-expression chains only).
 

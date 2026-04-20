@@ -59,7 +59,7 @@ internal/
     completion.go                   # textDocument/completion — $var list in view files
     diagnostics.go                  # textDocument/publishDiagnostics — missing-view opt-in
     symbols.go                      # workspace/symbol — view name fuzzy search
-    rename.go                       # textDocument/rename + prepareRename — view name string rename
+    rename.go                       # textDocument/rename + prepareRename + workspace/willRenameFiles
     handlers.go                     # textDocument/documentSymbol (stub)
     documents.go                    # DocumentStore — in-memory cache with disk fallback
     uri.go                          # URIToPath, PathToURI, toLSPLocation, UTF-16 column math
@@ -211,6 +211,16 @@ not since `view/walk.go` imports `project`).
 
 **VKCOM `StartPos` is 0-indexed**: matches `bytes.Index` byte offsets exactly. Any
 assertion comparing them must NOT subtract 1. Confirmed by test in `rename_test.go`.
+
+**`workspace/willRenameFiles` requires client support**: nvim-tree and oil.nvim send
+this notification; plain `:!mv` or `:e` do not. When the client does send it, the
+handler calls `NamesForFile(oldPath)` on the view index and `viewNameFromPath(newPath)`
+against the live view roots. If either name is empty (path outside view roots, or
+index not yet built), the file's edits are skipped safely.
+
+**`viewNameFromPath`** uses `filepath.Rel` against each view root in cascade order.
+The first successful relative path (no `..` prefix) wins. This is the inverse of
+`discoverViews` in `walk.go`, which uses the same logic in forward direction.
 
 **Rename only updates string literals, not the file**: `textDocument/rename` replaces
 every view name string literal (including quotes, preserving single/double quote style)
