@@ -21,25 +21,42 @@ import (
 //  2. Usage extraction: walk all PHP source files and extract ViewUsage entries
 //     by finding View::factory, new View, and Kohana::find_file('views', ...)
 //     call sites with their chained set/bind variable exposures.
+//
+// Both phases respect .gitignore files found at root and inside walked
+// directories, so vendor trees and generated code are skipped automatically.
 func Walk(root string, cfg config.Config, modules []project.Module) (*ViewIndex, error) {
 	viewRoots := project.BuildViewRoots(root, cfg, modules)
 	idx := NewViewIndex()
 
+	// Seed gitignore matchers from the project root. Nested .gitignore files are
+	// picked up dynamically as each walk descends into subdirectories.
+	initMatchers := rootGitIgnores(root)
+
 	// Phase 1: discover view definitions.
 	for _, vr := range viewRoots {
-		if err := discoverViews(vr, idx); err != nil {
+		if err := discoverViews(vr, idx, initMatchers); err != nil {
 			return nil, fmt.Errorf("view discovery %s: %w", vr.Path, err)
 		}
 	}
 
 	// Phase 2: extract view usages from PHP source files.
 	for _, dir := range project.PHPScanDirs(root, cfg, modules) {
-		if err := extractDir(dir, idx); err != nil {
+		if err := extractDir(dir, idx, initMatchers); err != nil {
 			fmt.Fprintf(os.Stderr, "koseven-lsp: usage scan %s: %v\n", dir, err)
 		}
 	}
 
 	return idx, nil
+}
+
+// rootGitIgnores loads the .gitignore file at root (if any). The Walk caller
+// passes this slice into both sub-walks; additional .gitignore files found
+// during descent are appended inside the walk closures.
+func rootGitIgnores(root string) []ignoreEntry {
+	if e := tryLoadIgnoreFile(filepath.Join(root, ".gitignore")); e != nil {
+		return []ignoreEntry{*e}
+	}
+	return nil
 }
 
 // ReindexFile performs an incremental update for a single changed PHP file.
@@ -77,12 +94,28 @@ func ReindexFile(path string, old *ViewIndex) (*ViewIndex, error) {
 
 // discoverViews walks vr.Path and records every .php file as a ViewDefinition.
 // Missing directories are silently skipped (modules without a views/ dir are valid).
-func discoverViews(vr project.ViewRoot, idx *ViewIndex) error {
+// Directories and files matched by any gitignore in matchers are skipped.
+func discoverViews(vr project.ViewRoot, idx *ViewIndex, initMatchers []ignoreEntry) error {
 	if _, err := os.Stat(vr.Path); os.IsNotExist(err) {
 		return nil
 	}
+
+	matchers := append([]ignoreEntry(nil), initMatchers...)
+
 	return filepath.WalkDir(vr.Path, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".php") {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if isIgnored(matchers, path) {
+				return filepath.SkipDir
+			}
+			if e := tryLoadIgnoreFile(filepath.Join(path, ".gitignore")); e != nil {
+				matchers = append(matchers, *e)
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".php") || isIgnored(matchers, path) {
 			return nil
 		}
 		rel, err := filepath.Rel(vr.Path, path)
@@ -103,12 +136,28 @@ func discoverViews(vr project.ViewRoot, idx *ViewIndex) error {
 
 // extractDir walks dir and extracts view usages from every .php file found.
 // Parse errors are logged to stderr and skipped; they don't abort the walk.
-func extractDir(dir string, idx *ViewIndex) error {
+// Directories and files matched by any gitignore in matchers are skipped.
+func extractDir(dir string, idx *ViewIndex, initMatchers []ignoreEntry) error {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return nil
 	}
+
+	matchers := append([]ignoreEntry(nil), initMatchers...)
+
 	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".php") {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if isIgnored(matchers, path) {
+				return filepath.SkipDir
+			}
+			if e := tryLoadIgnoreFile(filepath.Join(path, ".gitignore")); e != nil {
+				matchers = append(matchers, *e)
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".php") || isIgnored(matchers, path) {
 			return nil
 		}
 		astRoot, err := phpparse.File(path)

@@ -262,3 +262,23 @@ func TestReindexFile_MissingFile(t *testing.T) {
 	_, err = view.ReindexFile("/nonexistent/gone.php", old)
 	require.NoError(t, err)
 }
+
+// — Gitignore-aware walk —
+
+func TestWalk_GitIgnore_SkipsIgnoredDir(t *testing.T) {
+	// testdata/stock/application/.gitignore contains "vendor/".
+	// testdata/stock/application/vendor/some_lib/Helper.php calls
+	// View::factory('vendor/secret'). That usage must not appear in the index.
+	idx := walkStock(t)
+	usages := idx.UsagesOf("vendor/secret")
+	assert.Empty(t, usages,
+		"files inside a gitignored vendor/ directory must not be indexed")
+}
+
+func TestWalk_GitIgnore_NonIgnoredFilesStillIndexed(t *testing.T) {
+	// Sanity-check: the gitignore must not suppress non-vendor files.
+	idx := walkStock(t)
+	usages := idx.UsagesOf("pages/about")
+	assert.NotEmpty(t, usages,
+		"pages/about usages must still be indexed after gitignore support is added")
+}
