@@ -34,6 +34,7 @@ type Server struct {
 	mu       sync.RWMutex
 	root     string
 	cfg      config.Config
+	modules  []project.Module // populated after bootstrap.php is parsed
 	scanOnce sync.Once
 	viewIdx  view.Index
 
@@ -162,6 +163,14 @@ func (s *Server) viewIndex() view.Index {
 	return s.viewIdx
 }
 
+// cascadeState returns the project root, config, and module list needed for
+// cascade file lookups. Safe to call from any handler goroutine.
+func (s *Server) cascadeState() (root string, cfg config.Config, modules []project.Module) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.root, s.cfg, s.modules
+}
+
 // reindex rebuilds the view index and atomically swaps it in.
 func (s *Server) reindex(root string, cfg config.Config) {
 	s.log.Infof("koseven-lsp: indexing %s", root)
@@ -181,6 +190,7 @@ func (s *Server) reindex(root string, cfg config.Config) {
 	s.log.Infof("koseven-lsp: indexed %d view definition(s)", len(idx.AllDefinitions()))
 
 	s.mu.Lock()
+	s.modules = modules
 	s.viewIdx = idx
 	s.mu.Unlock()
 	s.log.Infof("koseven-lsp: indexing complete")

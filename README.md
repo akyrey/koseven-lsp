@@ -19,6 +19,11 @@ Generic PHP language servers (Intelephense, Psalm) have no knowledge of Koseven'
 
 **Cascade awareness**: reads `application/bootstrap.php` to discover enabled modules and their load order. `Kohana::modules([...])` must be a static array literal (dynamic/conditional loading is not supported).
 
+- **`ORM::factory('Member')` / `Model::factory('Member')`** → jumps to `classes/Model/Member.php` in the cascade. Compound names work: `ORM::factory('Member_Profile')` → `classes/Model/Member/Profile.php`.
+- **`Kohana::find_file('classes', 'Model_Member')`** → jumps to the class file in the cascade. Also works for `'i18n'`, `'messages'`, `'config'`, and `'media'` — any file type Kohana's cascading filesystem supports.
+
+Both features do direct filesystem stat-checks at request time (no extra index needed) and return all cascade matches so HMVC overrides are visible.
+
 ## Installation
 
 ```bash

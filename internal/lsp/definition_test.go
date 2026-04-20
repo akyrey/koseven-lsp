@@ -8,6 +8,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/akyrey/koseven-lsp/internal/config"
+	"github.com/akyrey/koseven-lsp/internal/project"
 )
 
 // fixtureRoot returns the absolute path to testdata/stock relative to this file.
@@ -97,6 +100,105 @@ Kohana::find_file('views', 'pages/about');
 
 	got := findViewNameAtOffset(src, "test.php", start+3)
 	assert.Equal(t, "pages/about", got)
+}
+
+// ─── ORM::factory tests ──────────────────────────────────────────────────────
+
+// TestFindClassFactoryAtOffset_ORM checks ORM::factory('User') detection.
+func TestFindClassFactoryAtOffset_ORM(t *testing.T) {
+	src := []byte(`<?php ORM::factory('User'); `)
+	needle := "'User'"
+	start := offsetOf(src, needle)
+	require.Greater(t, start, 0)
+
+	className, relPath := findClassFactoryAtOffset(src, "test.php", start+2)
+	assert.Equal(t, "Model_User", className)
+	assert.Equal(t, "Model/User.php", relPath)
+}
+
+// TestFindClassFactoryAtOffset_ModelFactory checks Model::factory variation.
+func TestFindClassFactoryAtOffset_ModelFactory(t *testing.T) {
+	src := []byte(`<?php Model::factory('Post'); `)
+	start := offsetOf(src, "'Post'")
+	require.Greater(t, start, 0)
+
+	className, relPath := findClassFactoryAtOffset(src, "test.php", start+2)
+	assert.Equal(t, "Model_Post", className)
+	assert.Equal(t, "Model/Post.php", relPath)
+}
+
+// TestFindClassFactoryAtOffset_SubModel checks compound model names.
+func TestFindClassFactoryAtOffset_SubModel(t *testing.T) {
+	src := []byte(`<?php ORM::factory('Member_Profile'); `)
+	start := offsetOf(src, "'Member_Profile'")
+	require.Greater(t, start, 0)
+
+	_, relPath := findClassFactoryAtOffset(src, "test.php", start+3)
+	assert.Equal(t, "Model/Member/Profile.php", relPath)
+}
+
+// TestFindClassFactoryAtOffset_NotOnString returns empty when cursor is not
+// on the string arg.
+func TestFindClassFactoryAtOffset_NotOnString(t *testing.T) {
+	src := []byte(`<?php ORM::factory('User'); `)
+	// Cursor on "ORM" keyword, not on the string arg.
+	className, relPath := findClassFactoryAtOffset(src, "test.php", 6)
+	assert.Empty(t, className)
+	assert.Empty(t, relPath)
+}
+
+// ─── Kohana::find_file tests ─────────────────────────────────────────────────
+
+// TestFindFindFileAtOffset_Classes checks find_file('classes', ...) detection.
+func TestFindFindFileAtOffset_Classes(t *testing.T) {
+	src := []byte(`<?php Kohana::find_file('classes', 'Model_User'); `)
+	start := offsetOf(src, "'Model_User'")
+	require.Greater(t, start, 0)
+
+	fileType, relPath := findFindFileAtOffset(src, "test.php", start+3)
+	assert.Equal(t, "classes", fileType)
+	assert.Equal(t, "Model/User.php", relPath)
+}
+
+// TestFindFindFileAtOffset_I18n checks find_file('i18n', ...) detection.
+func TestFindFindFileAtOffset_I18n(t *testing.T) {
+	src := []byte(`<?php Kohana::find_file('i18n', 'en'); `)
+	start := offsetOf(src, "'en'")
+	require.Greater(t, start, 0)
+
+	fileType, relPath := findFindFileAtOffset(src, "test.php", start+2)
+	assert.Equal(t, "i18n", fileType)
+	assert.Equal(t, "en.php", relPath)
+}
+
+// TestFindFindFileAtOffset_Views returns empty (handled by viewNameFinder).
+func TestFindFindFileAtOffset_Views(t *testing.T) {
+	src := []byte(`<?php Kohana::find_file('views', 'pages/about'); `)
+	start := offsetOf(src, "'pages/about'")
+	require.Greater(t, start, 0)
+
+	fileType, _ := findFindFileAtOffset(src, "test.php", start+3)
+	assert.Equal(t, "views", fileType, "views type must be returned so caller can skip it")
+}
+
+// ─── Cascade integration ─────────────────────────────────────────────────────
+
+// TestCascadeLocs_ORM verifies that ORM::factory('User') resolves to the
+// Model/User.php fixture file via the cascade.
+func TestCascadeLocs_ORM(t *testing.T) {
+	cfg, modules := stockCascadeState(t)
+	locs := cascadeLocs(stockRoot, cfg, modules, "classes", "Model/User.php")
+	require.NotEmpty(t, locs)
+	assert.Contains(t, string(locs[0].URI), "Model/User.php")
+}
+
+// stockCascadeState loads the stock fixture's cascade state for tests.
+func stockCascadeState(t *testing.T) (config.Config, []project.Module) {
+	t.Helper()
+	cfg := config.Defaults()
+	modules, err := project.ParseModules(stockRoot, cfg)
+	require.NoError(t, err)
+	return cfg, modules
 }
 
 // TestFindVarAtOffset verifies that bare variable names inside a view file are

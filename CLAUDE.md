@@ -52,8 +52,8 @@ internal/
     walk.go                         # Walk() + ReindexFile() + discoverViews + extractDir
     extract.go                      # extractVisitor + tryExtractChain + inferType
   lsp/
-    server.go                       # Server struct — reindex(), reindexFiles(), watcher
-    definition.go                   # textDocument/definition — viewNameFinder visitor
+    server.go                       # Server struct — cascadeState(), reindex(), reindexFiles(), watcher
+    definition.go                   # textDocument/definition — view, ORM::factory, Kohana::find_file
     references.go                   # textDocument/references — view-file mode + string mode
     hover.go                        # textDocument/hover — view hover + $var type hover
     completion.go                   # textDocument/completion — $var list in view files
@@ -72,6 +72,7 @@ internal/
     module.go                       # RootKind, Module, ViewRoot types
     bootstrap.go                    # ParseModules() — static Kohana::modules([...]) extraction
     roots.go                        # BuildViewRoots(), PHPScanDirs()
+    cascade.go                      # CascadeBase, BuildCascadeBases(), FindCascadeFiles(), ClassNameToRelPath()
 testdata/
   stock/                            # minimal Koseven: no modules, one view, one controller
   hmvc/                             # HMVC: modules/blog/ + modules/auth/ with cascade overlap
@@ -206,6 +207,16 @@ not push diagnostics; they refresh on next file open/edit.
 **`RootKind` lives in `project` package**: `view/types.go` re-exports the constants
 as aliases to avoid a circular import (`view → project` is fine; `project → view` is
 not since `view/walk.go` imports `project`).
+
+**Cascade go-to-def uses stat-checks, not an index**: `ORM::factory` and
+`Kohana::find_file` (non-view) resolve files with `project.FindCascadeFiles` — a
+sequence of `os.Stat` calls against each cascade base. This is fast enough (3–10
+checks per request) and requires no additional index. It means go-to-def works even
+before the view index finishes building.
+
+**`ClassNameToRelPath`**: replaces `_` with `/` and appends `.php`. Kohana's PSR-0
+class-to-path convention. `Model_Member` → `Model/Member.php`, not lowercase.
+Kohana's autoloader lowercases on-the-fly but file names match the class name case.
 
 **`withoutFile` shares definition maps**: `ViewIndex.withoutFile(path)` returns a
 new index where `byName`/`byPath` are shared (definitions), only `usages` is
