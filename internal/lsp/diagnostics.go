@@ -38,7 +38,7 @@ func collectMissingViewDiags(src []byte, path string, idx view.Index) []protocol
 		return nil
 	}
 
-	usages, _ := view.ExtractFileUsages(path, astRoot)
+	usages, _ := view.ExtractFileUsages(path, astRoot, src)
 
 	sev := protocol.DiagnosticSeverityWarning
 	source := diagSource

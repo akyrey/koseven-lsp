@@ -38,7 +38,7 @@ func toLSPLocation(loc phputil.Location) protocol.Location {
 	var col uint32
 	if loc.StartByte > 0 {
 		if src, err := os.ReadFile(loc.Path); err == nil {
-			col = utf16ColFromFileOffset(src, loc.StartLine, loc.StartByte)
+			col = phputil.UTF16ColFromOffset(src, loc.StartLine, loc.StartByte)
 		}
 	}
 	return protocol.Location{
@@ -70,8 +70,8 @@ func toLSPRange(loc phputil.Location, src []byte) protocol.Range {
 	}
 	var startCol, endCol uint32
 	if src != nil {
-		startCol = utf16ColFromFileOffset(src, loc.StartLine, loc.StartByte)
-		endCol = utf16ColFromFileOffset(src, loc.EndLine, loc.EndByte)
+		startCol = phputil.UTF16ColFromOffset(src, loc.StartLine, loc.StartByte)
+		endCol = phputil.UTF16ColFromOffset(src, loc.EndLine, loc.EndByte)
 	}
 	return protocol.Range{
 		Start: protocol.Position{Line: startLine, Character: startCol},
@@ -111,38 +111,3 @@ func positionToByteOffset(src []byte, pos protocol.Position) int {
 	return offset
 }
 
-// utf16ColFromFileOffset computes the zero-based UTF-16 column for a
-// file-level byte offset. lineNum is 1-based.
-func utf16ColFromFileOffset(src []byte, lineNum int, fileOffset int) uint32 {
-	if len(src) == 0 || fileOffset <= 0 {
-		return 0
-	}
-	lineStart := 0
-	for l := 1; l < lineNum; l++ {
-		idx := bytes.IndexByte(src[lineStart:], '\n')
-		if idx < 0 {
-			return 0
-		}
-		lineStart += idx + 1
-	}
-	if fileOffset < lineStart || fileOffset > len(src) {
-		return 0
-	}
-	return countUTF16Units(src[lineStart:fileOffset])
-}
-
-// countUTF16Units returns the number of UTF-16 code units for the UTF-8
-// encoded bytes in b.
-func countUTF16Units(b []byte) uint32 {
-	var n uint32
-	for len(b) > 0 {
-		r, size := utf8.DecodeRune(b)
-		b = b[size:]
-		if r >= 0x10000 {
-			n += 2
-		} else {
-			n++
-		}
-	}
-	return n
-}

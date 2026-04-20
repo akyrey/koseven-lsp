@@ -275,6 +275,31 @@ func TestWalk_GitIgnore_SkipsIgnoredDir(t *testing.T) {
 		"files inside a gitignored vendor/ directory must not be indexed")
 }
 
+// — NameRange column precision —
+
+// TestWalk_NameRange_HasPreciseColumns verifies that NameRange carries non-zero
+// UTF-16 column offsets now that src bytes are threaded into the extractor.
+// The fixture has View::factory('pages/about') on a line with leading whitespace,
+// so both Start.Character and End.Character must be > 0.
+func TestWalk_NameRange_HasPreciseColumns(t *testing.T) {
+	idx := walkStock(t)
+	usages := idx.UsagesOf("pages/about")
+	require.NotEmpty(t, usages)
+
+	for _, u := range usages {
+		if u.NameRange.Start.Line == 0 && u.NameRange.End.Line == 0 {
+			continue // zero NameRange — skip (shouldn't happen for this fixture)
+		}
+		assert.Greater(t, u.NameRange.Start.Character, uint32(0),
+			"NameRange.Start.Character must be > 0 for indented call site")
+		assert.Greater(t, u.NameRange.End.Character, uint32(0),
+			"NameRange.End.Character must be > 0 for indented call site")
+		assert.Greater(t, u.NameRange.End.Character, u.NameRange.Start.Character,
+			"NameRange.End must be past NameRange.Start on the same line")
+		return // one passing usage is sufficient
+	}
+}
+
 func TestWalk_GitIgnore_NonIgnoredFilesStillIndexed(t *testing.T) {
 	// Sanity-check: the gitignore must not suppress non-vendor files.
 	idx := walkStock(t)

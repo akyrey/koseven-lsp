@@ -13,9 +13,10 @@ import (
 
 // ExtractFileUsages parses a single PHP file's AST and returns all discovered
 // ViewUsages and any globally exposed variables. Exported for use by the LSP
-// diagnostic layer.
-func ExtractFileUsages(path string, astRoot ast.Vertex) ([]ViewUsage, []ExposedVar) {
-	ev := newExtractVisitor(path)
+// diagnostic layer. src is the raw file bytes used to compute precise UTF-16
+// column offsets in NameRange; pass nil to get line-level ranges only.
+func ExtractFileUsages(path string, astRoot ast.Vertex, src []byte) ([]ViewUsage, []ExposedVar) {
+	ev := newExtractVisitor(path, src)
 	traverser.NewTraverser(ev).Traverse(astRoot)
 	return ev.usages, ev.globals
 }
@@ -45,15 +46,17 @@ func ExtractFileUsages(path string, astRoot ast.Vertex) ([]ViewUsage, []ExposedV
 type extractVisitor struct {
 	visitor.Null
 	path    string
-	seen    map[int]struct{}   // base StartPos → already recorded
-	scope   map[string]int     // variable name → index in v.usages
+	src     []byte           // raw file bytes for column offset computation
+	seen    map[int]struct{} // base StartPos → already recorded
+	scope   map[string]int   // variable name → index in v.usages
 	usages  []ViewUsage
 	globals []ExposedVar
 }
 
-func newExtractVisitor(path string) *extractVisitor {
+func newExtractVisitor(path string, src []byte) *extractVisitor {
 	return &extractVisitor{
 		path:  path,
+		src:   src,
 		seen:  make(map[int]struct{}),
 		scope: make(map[string]int),
 	}
@@ -92,7 +95,7 @@ func (v *extractVisitor) ExprAssign(n *ast.ExprAssign) {
 		return
 	}
 
-	viewName, construct, vars, basePos, nameRange, found := tryExtractChain(n.Expr)
+	viewName, construct, vars, basePos, nameRange, found := tryExtractChain(n.Expr, v.src)
 	if !found {
 		// Variable reassigned to a non-view — invalidate its scope entry.
 		delete(v.scope, varName)
@@ -134,7 +137,7 @@ func (v *extractVisitor) ExprMethodCall(n *ast.ExprMethodCall) {
 // ─── Inline chain recording ───────────────────────────────────────────────────
 
 func (v *extractVisitor) record(node ast.Vertex) {
-	viewName, construct, vars, basePos, nameRange, found := tryExtractChain(node)
+	viewName, construct, vars, basePos, nameRange, found := tryExtractChain(node, v.src)
 	if !found {
 		return
 	}
@@ -241,7 +244,9 @@ func exprVariableName(node ast.Vertex) string {
 // tryExtractChain recursively unwraps a method chain and returns the view name,
 // construct type, all exposed vars, the StartPos of the base construction node
 // (for deduplication), and the LSP range of the name string literal.
-func tryExtractChain(node ast.Vertex) (viewName string, c Construct, vars []ExposedVar, basePos int, nameRange protocol.Range, found bool) {
+// src is the raw file bytes; when non-nil the returned NameRange has precise
+// UTF-16 column offsets.
+func tryExtractChain(node ast.Vertex, src []byte) (viewName string, c Construct, vars []ExposedVar, basePos int, nameRange protocol.Range, found bool) {
 	if node == nil {
 		return
 	}
@@ -252,14 +257,14 @@ func tryExtractChain(node ast.Vertex) (viewName string, c Construct, vars []Expo
 			if pos == nil {
 				return
 			}
-			return name, ConstructViewFactory, extractSecondArgVars(n.Args), pos.StartPos, argLineRange(n.Args, 0), true
+			return name, ConstructViewFactory, extractSecondArgVars(n.Args), pos.StartPos, argPreciseRange(n.Args, 0, src), true
 		}
 		if name := findFileViewName(n); name != "" {
 			pos := n.GetPosition()
 			if pos == nil {
 				return
 			}
-			return name, ConstructFindFile, nil, pos.StartPos, argLineRange(n.Args, 1), true
+			return name, ConstructFindFile, nil, pos.StartPos, argPreciseRange(n.Args, 1, src), true
 		}
 
 	case *ast.ExprNew:
@@ -268,11 +273,11 @@ func tryExtractChain(node ast.Vertex) (viewName string, c Construct, vars []Expo
 			if pos == nil {
 				return
 			}
-			return name, ConstructNewView, extractSecondArgVars(n.Args), pos.StartPos, argLineRange(n.Args, 0), true
+			return name, ConstructNewView, extractSecondArgVars(n.Args), pos.StartPos, argPreciseRange(n.Args, 0, src), true
 		}
 
 	case *ast.ExprMethodCall:
-		vn, cn, baseVars, bp, nr, ok := tryExtractChain(n.Var)
+		vn, cn, baseVars, bp, nr, ok := tryExtractChain(n.Var, src)
 		if !ok {
 			return
 		}
@@ -281,10 +286,11 @@ func tryExtractChain(node ast.Vertex) (viewName string, c Construct, vars []Expo
 	return
 }
 
-// argLineRange returns a line-level LSP Range for the expression at args[i].
-// Character offsets are 0; callers needing column precision must compute from
-// source bytes separately.
-func argLineRange(args []ast.Vertex, i int) protocol.Range {
+// argPreciseRange returns the LSP Range for the expression at args[i].
+// When src is non-nil, Start.Character and End.Character are set to their
+// correct UTF-16 column offsets using the VKCOM byte positions. Falls back
+// to Character 0 when src is nil or the position is unavailable.
+func argPreciseRange(args []ast.Vertex, i int, src []byte) protocol.Range {
 	if i >= len(args) {
 		return protocol.Range{}
 	}
@@ -296,10 +302,16 @@ func argLineRange(args []ast.Vertex, i int) protocol.Range {
 	if pos == nil || pos.StartLine == 0 {
 		return protocol.Range{}
 	}
-	line := uint32(pos.StartLine - 1)
+	startLine := uint32(pos.StartLine - 1)
+	endLine := uint32(pos.EndLine - 1)
+	var startCol, endCol uint32
+	if len(src) > 0 {
+		startCol = phputil.UTF16ColFromOffset(src, pos.StartLine, pos.StartPos)
+		endCol = phputil.UTF16ColFromOffset(src, pos.EndLine, pos.EndPos)
+	}
 	return protocol.Range{
-		Start: protocol.Position{Line: line},
-		End:   protocol.Position{Line: line},
+		Start: protocol.Position{Line: startLine, Character: startCol},
+		End:   protocol.Position{Line: endLine, Character: endCol},
 	}
 }
 

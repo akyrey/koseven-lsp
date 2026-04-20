@@ -75,13 +75,17 @@ func ReindexFile(path string, old *ViewIndex) (*ViewIndex, error) {
 	}
 	next := old.withoutFile(path)
 
-	astRoot, err := phpparse.File(path)
+	src, err := os.ReadFile(path)
 	if err != nil {
-		// File deleted or parse error — removal of old entries is sufficient.
+		// File deleted — removal of old entries is sufficient.
+		return next, nil
+	}
+	astRoot, err := phpparse.Bytes(src, path)
+	if err != nil {
 		return next, nil
 	}
 
-	ev := &extractVisitor{path: path, seen: make(map[int]struct{})}
+	ev := newExtractVisitor(path, src)
 	traverser.NewTraverser(ev).Traverse(astRoot)
 
 	for _, u := range ev.usages {
@@ -160,12 +164,17 @@ func extractDir(dir string, idx *ViewIndex, initMatchers []ignoreEntry) error {
 		if !strings.HasSuffix(path, ".php") || isIgnored(matchers, path) {
 			return nil
 		}
-		astRoot, err := phpparse.File(path)
+		src, err := os.ReadFile(path)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "koseven-lsp: skipping %s: %v\n", path, err)
 			return nil
 		}
-		usages, globals := ExtractFileUsages(path, astRoot)
+		astRoot, err := phpparse.Bytes(src, path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "koseven-lsp: skipping %s: %v\n", path, err)
+			return nil
+		}
+		usages, globals := ExtractFileUsages(path, astRoot, src)
 		for _, u := range usages {
 			idx.addUsage(u)
 		}
