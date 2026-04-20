@@ -74,8 +74,11 @@ func (s *Server) Initialize(_ *glsp.Context, p *protocol.InitializeParams) (any,
 			ReferencesProvider:     true,
 			HoverProvider:          true,
 			CompletionProvider:     &protocol.CompletionOptions{},
-			DocumentSymbolProvider: true,
-			WorkspaceSymbolProvider: true,
+			DocumentSymbolProvider:  true,
+			WorkspaceSymbolProvider:  true,
+			RenameProvider: &protocol.RenameOptions{
+				PrepareProvider: boolPtr(true),
+			},
 		},
 		ServerInfo: &protocol.InitializeResultServerInfo{
 			Name:    "koseven-lsp",

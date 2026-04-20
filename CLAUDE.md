@@ -59,6 +59,7 @@ internal/
     completion.go                   # textDocument/completion — $var list in view files
     diagnostics.go                  # textDocument/publishDiagnostics — missing-view opt-in
     symbols.go                      # workspace/symbol — view name fuzzy search
+    rename.go                       # textDocument/rename + prepareRename — view name string rename
     handlers.go                     # textDocument/documentSymbol (stub)
     documents.go                    # DocumentStore — in-memory cache with disk fallback
     uri.go                          # URIToPath, PathToURI, toLSPLocation, UTF-16 column math
@@ -207,6 +208,14 @@ not push diagnostics; they refresh on next file open/edit.
 **`RootKind` lives in `project` package**: `view/types.go` re-exports the constants
 as aliases to avoid a circular import (`view → project` is fine; `project → view` is
 not since `view/walk.go` imports `project`).
+
+**VKCOM `StartPos` is 0-indexed**: matches `bytes.Index` byte offsets exactly. Any
+assertion comparing them must NOT subtract 1. Confirmed by test in `rename_test.go`.
+
+**Rename only updates string literals, not the file**: `textDocument/rename` replaces
+every view name string literal (including quotes, preserving single/double quote style)
+across all usage files. It does NOT rename the `.php` view file on disk — that requires
+either `workspace/willRenameFiles` (planned) or the developer renaming the file manually.
 
 **Cascade go-to-def uses stat-checks, not an index**: `ORM::factory` and
 `Kohana::find_file` (non-view) resolve files with `project.FindCascadeFiles` — a
