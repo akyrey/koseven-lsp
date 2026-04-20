@@ -116,7 +116,7 @@ func extractDir(dir string, idx *ViewIndex) error {
 			fmt.Fprintf(os.Stderr, "koseven-lsp: skipping %s: %v\n", path, err)
 			return nil
 		}
-		usages, globals := extractFileUsages(path, astRoot)
+		usages, globals := ExtractFileUsages(path, astRoot)
 		for _, u := range usages {
 			idx.addUsage(u)
 		}

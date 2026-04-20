@@ -37,13 +37,11 @@ func buildHandler(s *lsp.Server) *protocol.Handler {
 		TextDocumentDidChange: s.DidChange,
 		TextDocumentDidClose:  s.DidClose,
 
-		// Feature handlers — stubs registered now so the editor sees the
-		// capabilities advertised in Initialize. Implementations land in
-		// subsequent iterations once the view index is built.
-		TextDocumentDefinition:    s.Definition,
-		TextDocumentReferences:    s.References,
-		TextDocumentHover:         s.Hover,
-		TextDocumentCompletion:    s.Completion,
+		TextDocumentDefinition:     s.Definition,
+		TextDocumentReferences:     s.References,
+		TextDocumentHover:          s.Hover,
+		TextDocumentCompletion:     s.Completion,
 		TextDocumentDocumentSymbol: s.DocumentSymbol,
+		WorkspaceSymbol:            s.WorkspaceSymbol,
 	}
 }

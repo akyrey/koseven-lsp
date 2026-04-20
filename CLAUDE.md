@@ -57,6 +57,8 @@ internal/
     references.go                   # textDocument/references — view-file mode + string mode
     hover.go                        # textDocument/hover — view hover + $var type hover
     completion.go                   # textDocument/completion — $var list in view files
+    diagnostics.go                  # textDocument/publishDiagnostics — missing-view opt-in
+    symbols.go                      # workspace/symbol — view name fuzzy search
     handlers.go                     # textDocument/documentSymbol (stub)
     documents.go                    # DocumentStore — in-memory cache with disk fallback
     uri.go                          # URIToPath, PathToURI, toLSPLocation, UTF-16 column math
@@ -189,6 +191,17 @@ call site. Variable scope tracking is needed to fix this; planned for v0.2.x.
 **`ExprStaticCall.Call` vs `.Method`**: VKCOM parser uses `Call` (not `Method`) for
 the method name field of static calls (`View::factory`). Instance method calls
 (`ExprMethodCall`) use `Method`. This asymmetry has burned us once — guard against it.
+
+**`NameRange` vs `Range` in ViewUsage**: `Range` spans the full construction expression
+(for watcher/index tracking). `NameRange` spans only the string literal (for references
+and diagnostics shown in the editor). Use `usageRange(u)` in `lsp/` code, which prefers
+`NameRange` when non-zero. `NameRange` is line-level only (Character: 0) because the
+extractor doesn't have source bytes available. Full column precision would require
+threading `src []byte` through `extractFileUsages`.
+
+**Diagnostics are opt-in**: `diagnostics.missing_views` defaults to `false`. Pushed on
+`DidOpen`, `DidChange`, and cleared (empty list) on `DidClose`. Background reindex does
+not push diagnostics; they refresh on next file open/edit.
 
 **`RootKind` lives in `project` package**: `view/types.go` re-exports the constants
 as aliases to avoid a circular import (`view → project` is fine; `project → view` is

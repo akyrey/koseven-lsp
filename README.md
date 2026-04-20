@@ -9,10 +9,11 @@ Generic PHP language servers (Intelephense, Psalm) have no knowledge of Koseven'
 ### v0.1.0 (current)
 
 - **Go-to-definition on view names** — cursor on `'pages/about'` inside `View::factory('pages/about')` or `new View('pages/about', ...)` jumps to the resolved `.php` file. Returns all candidates when the same name exists in multiple modules (HMVC cascade).
-- **Find-references** — open `application/views/pages/about.php` and request references to see every `View::factory`, `new View`, and `Kohana::find_file('views', ...)` call that constructs it. Also works from a PHP file: cursor on a view name string returns all other call sites.
+- **Find-references** — open `application/views/pages/about.php` and request references to see every `View::factory`, `new View`, and `Kohana::find_file('views', ...)` call that constructs it. Also works from a PHP file: cursor on a view name string returns all other call sites. Locations point to the string literal, not the full expression.
 - **Inferred view variables** — hover on `$var` inside a view to see its inferred type and originating call sites. `$` completion lists all variables exposed via `->set()`, `->bind()`, the factory second-argument array, `set_global`, and `bind_global`.
 - **Hover on view names** — cursor on a view name string shows the resolved file path, cascade order, and module for each candidate.
-- **Document symbols** — view files are listed as symbols so Neovim Telescope and similar fuzzy-finders can navigate to them.
+- **Document symbols + workspace symbols** — view files are listed as symbols for `textDocument/documentSymbol` and `workspace/symbol`. Neovim Telescope fuzzy-finder works out of the box.
+- **Missing-view diagnostic** *(opt-in)* — set `diagnostics.missing_views = true` in `koseven-ls.toml` to get a Warning when `View::factory('name')` resolves to no file. Off by default to avoid noise during renames and file moves.
 
 **Type inference** (inside `->set()` and factory arrays): string/int/float/bool/null literals are typed exactly; `new Foo()` → `Foo`; `ORM::factory('Member')` / `Model::factory('Member')` → `Model_Member`; `Foo::factory('Bar')` → `Foo_Bar`. Variables passed through assignments are not yet inferred (single-expression chains only).
 

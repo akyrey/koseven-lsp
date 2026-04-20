@@ -37,9 +37,10 @@ const (
 
 // ViewUsage is a call site in a PHP file that constructs or references a view.
 type ViewUsage struct {
-	Name        string       // logical view name
-	File        string       // absolute PHP file path containing this call
-	Range       protocol.Range
+	Name        string         // logical view name
+	File        string         // absolute PHP file path containing this call
+	Range       protocol.Range // range of the full construction expression
+	NameRange   protocol.Range // range of the view name string literal (precise)
 	Construct   Construct
 	ExposedVars []ExposedVar // vars injected at this call site
 }

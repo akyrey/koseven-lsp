@@ -3,7 +3,19 @@ package lsp
 import (
 	"github.com/tliron/glsp"
 	protocol "github.com/tliron/glsp/protocol_3_16"
+
+	"github.com/akyrey/koseven-lsp/internal/indexer/view"
 )
+
+// usageRange returns the best available range for a view usage location.
+// Prefers NameRange (the string literal) over the full expression Range.
+func usageRange(u view.ViewUsage) protocol.Range {
+	zero := protocol.Range{}
+	if u.NameRange != zero {
+		return u.NameRange
+	}
+	return u.Range
+}
 
 // References handles textDocument/references.
 //
@@ -29,7 +41,7 @@ func (s *Server) References(_ *glsp.Context, p *protocol.ReferenceParams) ([]pro
 			for _, u := range idx.UsagesOf(name) {
 				locs = append(locs, protocol.Location{
 					URI:   PathToURI(u.File),
-					Range: u.Range,
+					Range: usageRange(u),
 				})
 			}
 		}
@@ -51,7 +63,7 @@ func (s *Server) References(_ *glsp.Context, p *protocol.ReferenceParams) ([]pro
 	for _, u := range idx.UsagesOf(viewName) {
 		locs = append(locs, protocol.Location{
 			URI:   PathToURI(u.File),
-			Range: u.Range,
+			Range: usageRange(u),
 		})
 	}
 	return locs, nil

@@ -11,9 +11,10 @@ import (
 	"github.com/akyrey/koseven-lsp/internal/phputil"
 )
 
-// extractFileUsages parses a single PHP file's AST and returns all discovered
-// ViewUsages and any globally exposed variables.
-func extractFileUsages(path string, astRoot ast.Vertex) ([]ViewUsage, []ExposedVar) {
+// ExtractFileUsages parses a single PHP file's AST and returns all discovered
+// ViewUsages and any globally exposed variables. Exported for use by the LSP
+// diagnostic layer.
+func ExtractFileUsages(path string, astRoot ast.Vertex) ([]ViewUsage, []ExposedVar) {
 	ev := &extractVisitor{
 		path: path,
 		seen: make(map[int]struct{}),
@@ -55,7 +56,7 @@ func (v *extractVisitor) ExprMethodCall(n *ast.ExprMethodCall) {
 }
 
 func (v *extractVisitor) record(node ast.Vertex) {
-	viewName, construct, vars, basePos, found := tryExtractChain(node)
+	viewName, construct, vars, basePos, nameRange, found := tryExtractChain(node)
 	if !found {
 		return
 	}
@@ -76,6 +77,7 @@ func (v *extractVisitor) record(node ast.Vertex) {
 		Name:        viewName,
 		File:        v.path,
 		Range:       r,
+		NameRange:   nameRange,
 		Construct:   construct,
 		ExposedVars: vars,
 	})
@@ -114,9 +116,9 @@ func (v *extractVisitor) tryGlobalStatic(n *ast.ExprStaticCall) {
 // — Chain extraction —
 
 // tryExtractChain recursively unwraps a method chain and returns the view name,
-// construct type, all exposed vars collected along the chain, and the StartPos
-// of the innermost view construction node (used for deduplication).
-func tryExtractChain(node ast.Vertex) (viewName string, c Construct, vars []ExposedVar, basePos int, found bool) {
+// construct type, all exposed vars, the StartPos of the base construction node
+// (for deduplication), and the LSP range of the name string literal.
+func tryExtractChain(node ast.Vertex) (viewName string, c Construct, vars []ExposedVar, basePos int, nameRange protocol.Range, found bool) {
 	if node == nil {
 		return
 	}
@@ -127,14 +129,15 @@ func tryExtractChain(node ast.Vertex) (viewName string, c Construct, vars []Expo
 			if pos == nil {
 				return
 			}
-			return name, ConstructViewFactory, extractSecondArgVars(n.Args), pos.StartPos, true
+			return name, ConstructViewFactory, extractSecondArgVars(n.Args), pos.StartPos, argLineRange(n.Args, 0), true
 		}
 		if name := findFileViewName(n); name != "" {
 			pos := n.GetPosition()
 			if pos == nil {
 				return
 			}
-			return name, ConstructFindFile, nil, pos.StartPos, true
+			// find_file's view name is the second arg
+			return name, ConstructFindFile, nil, pos.StartPos, argLineRange(n.Args, 1), true
 		}
 
 	case *ast.ExprNew:
@@ -143,17 +146,39 @@ func tryExtractChain(node ast.Vertex) (viewName string, c Construct, vars []Expo
 			if pos == nil {
 				return
 			}
-			return name, ConstructNewView, extractSecondArgVars(n.Args), pos.StartPos, true
+			return name, ConstructNewView, extractSecondArgVars(n.Args), pos.StartPos, argLineRange(n.Args, 0), true
 		}
 
 	case *ast.ExprMethodCall:
-		vn, cn, baseVars, bp, ok := tryExtractChain(n.Var)
+		vn, cn, baseVars, bp, nr, ok := tryExtractChain(n.Var)
 		if !ok {
 			return
 		}
-		return vn, cn, append(baseVars, extractChainMethodVars(n)...), bp, true
+		return vn, cn, append(baseVars, extractChainMethodVars(n)...), bp, nr, true
 	}
 	return
+}
+
+// argLineRange returns a line-level LSP Range for the expression at args[i].
+// Character offsets are 0; callers needing column precision must compute from
+// source bytes separately.
+func argLineRange(args []ast.Vertex, i int) protocol.Range {
+	if i >= len(args) {
+		return protocol.Range{}
+	}
+	expr := phputil.ArgExpr(args[i])
+	if expr == nil {
+		return protocol.Range{}
+	}
+	pos := expr.GetPosition()
+	if pos == nil || pos.StartLine == 0 {
+		return protocol.Range{}
+	}
+	line := uint32(pos.StartLine - 1)
+	return protocol.Range{
+		Start: protocol.Position{Line: line},
+		End:   protocol.Position{Line: line},
+	}
 }
 
 // — View construction matchers —
