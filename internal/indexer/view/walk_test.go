@@ -1,8 +1,11 @@
 package view_test
 
 import (
+	"io/fs"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -261,6 +264,112 @@ func TestReindexFile_MissingFile(t *testing.T) {
 	// and not error.
 	_, err = view.ReindexFile("/nonexistent/gone.php", old)
 	require.NoError(t, err)
+}
+
+// — Index cache —
+
+func TestCache_WarmHit_ReturnsSameData(t *testing.T) {
+	root := t.TempDir()
+	// Copy the stock fixture into the temp dir so the cache write doesn't
+	// pollute the checked-in testdata tree.
+	stockRoot := filepath.Join("..", "..", "..", "testdata", "stock")
+	copyDir(t, stockRoot, root)
+
+	cfg := config.Defaults()
+	modules, err := project.ParseModules(root, cfg)
+	require.NoError(t, err)
+
+	// First Walk — builds and saves the cache.
+	idx1, err := view.Walk(root, cfg, modules)
+	require.NoError(t, err)
+	// Give the async goroutine time to flush.
+	waitForCache(t, root)
+
+	// Second Walk — must hit the cache.
+	idx2, err := view.Walk(root, cfg, modules)
+	require.NoError(t, err)
+
+	assert.ElementsMatch(t,
+		defNames(idx1.AllDefinitions()),
+		defNames(idx2.AllDefinitions()),
+		"cached index must have the same view definitions as the fresh one")
+	assert.Equal(t,
+		len(idx1.UsagesOf("pages/about")),
+		len(idx2.UsagesOf("pages/about")),
+		"cached index must have the same usage count")
+}
+
+func TestCache_StaleFile_Misses(t *testing.T) {
+	root := t.TempDir()
+	stockRoot := filepath.Join("..", "..", "..", "testdata", "stock")
+	copyDir(t, stockRoot, root)
+
+	cfg := config.Defaults()
+	modules, err := project.ParseModules(root, cfg)
+	require.NoError(t, err)
+
+	// Build and save cache.
+	_, err = view.Walk(root, cfg, modules)
+	require.NoError(t, err)
+	waitForCache(t, root)
+
+	// Touch a PHP file to invalidate the manifest.
+	controllerPath := filepath.Join(root, "application", "classes", "Controller", "Pages.php")
+	now := time.Now().Add(time.Second)
+	require.NoError(t, os.Chtimes(controllerPath, now, now))
+
+	// Second Walk — manifest mismatch must trigger a fresh Walk.
+	// We verify this indirectly: the returned index must still be valid.
+	idx2, err := view.Walk(root, cfg, modules)
+	require.NoError(t, err)
+	assert.NotEmpty(t, idx2.UsagesOf("pages/about"),
+		"fresh walk after cache bust must still index usages")
+}
+
+// waitForCache polls until the cache file appears or the test times out.
+func waitForCache(t *testing.T, root string) {
+	t.Helper()
+	cacheFile := filepath.Join(root, ".cache", "koseven-ls", "index.gob")
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(cacheFile); err == nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("cache file never appeared at %s", cacheFile)
+}
+
+// copyDir recursively copies src into dst, creating dst if needed.
+func copyDir(t *testing.T, src, dst string) {
+	t.Helper()
+	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0o644)
+	})
+	require.NoError(t, err)
+}
+
+func defNames(defs []view.ViewDefinition) []string {
+	names := make([]string, len(defs))
+	for i, d := range defs {
+		names[i] = d.Name
+	}
+	return names
 }
 
 // — Gitignore-aware walk —

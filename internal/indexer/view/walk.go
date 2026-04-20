@@ -24,7 +24,13 @@ import (
 //
 // Both phases respect .gitignore files found at root and inside walked
 // directories, so vendor trees and generated code are skipped automatically.
+// The resulting index is cached to disk; subsequent calls return the cached
+// index instantly when no file in the manifest has changed.
 func Walk(root string, cfg config.Config, modules []project.Module) (*ViewIndex, error) {
+	if idx := tryLoadCache(root, cfg, modules); idx != nil {
+		return idx, nil
+	}
+
 	viewRoots := project.BuildViewRoots(root, cfg, modules)
 	idx := NewViewIndex()
 
@@ -32,19 +38,25 @@ func Walk(root string, cfg config.Config, modules []project.Module) (*ViewIndex,
 	// picked up dynamically as each walk descends into subdirectories.
 	initMatchers := rootGitIgnores(root)
 
+	// manifest accumulates stat entries for every file and directory visited so
+	// the cache can detect staleness on next startup.
+	var manifest []statEntry
+
 	// Phase 1: discover view definitions.
 	for _, vr := range viewRoots {
-		if err := discoverViews(vr, idx, initMatchers); err != nil {
+		if err := discoverViews(vr, idx, initMatchers, &manifest); err != nil {
 			return nil, fmt.Errorf("view discovery %s: %w", vr.Path, err)
 		}
 	}
 
 	// Phase 2: extract view usages from PHP source files.
 	for _, dir := range project.PHPScanDirs(root, cfg, modules) {
-		if err := extractDir(dir, idx, initMatchers); err != nil {
+		if err := extractDir(dir, idx, initMatchers, &manifest); err != nil {
 			fmt.Fprintf(os.Stderr, "koseven-lsp: usage scan %s: %v\n", dir, err)
 		}
 	}
+
+	go saveCache(root, cfg, modules, idx, manifest)
 
 	return idx, nil
 }
@@ -57,6 +69,15 @@ func rootGitIgnores(root string) []ignoreEntry {
 		return []ignoreEntry{*e}
 	}
 	return nil
+}
+
+// appendStat adds a statEntry for path using the DirEntry info (no extra stat).
+func appendStat(manifest *[]statEntry, path string, d fs.DirEntry) {
+	info, err := d.Info()
+	if err != nil {
+		return
+	}
+	*manifest = append(*manifest, statEntry{Path: path, ModTime: info.ModTime()})
 }
 
 // ReindexFile performs an incremental update for a single changed PHP file.
@@ -99,7 +120,8 @@ func ReindexFile(path string, old *ViewIndex) (*ViewIndex, error) {
 // discoverViews walks vr.Path and records every .php file as a ViewDefinition.
 // Missing directories are silently skipped (modules without a views/ dir are valid).
 // Directories and files matched by any gitignore in matchers are skipped.
-func discoverViews(vr project.ViewRoot, idx *ViewIndex, initMatchers []ignoreEntry) error {
+// Every visited entry is appended to manifest for cache validation.
+func discoverViews(vr project.ViewRoot, idx *ViewIndex, initMatchers []ignoreEntry, manifest *[]statEntry) error {
 	if _, err := os.Stat(vr.Path); os.IsNotExist(err) {
 		return nil
 	}
@@ -110,6 +132,7 @@ func discoverViews(vr project.ViewRoot, idx *ViewIndex, initMatchers []ignoreEnt
 		if err != nil {
 			return nil
 		}
+		appendStat(manifest, path, d)
 		if d.IsDir() {
 			if isIgnored(matchers, path) {
 				return filepath.SkipDir
@@ -141,7 +164,8 @@ func discoverViews(vr project.ViewRoot, idx *ViewIndex, initMatchers []ignoreEnt
 // extractDir walks dir and extracts view usages from every .php file found.
 // Parse errors are logged to stderr and skipped; they don't abort the walk.
 // Directories and files matched by any gitignore in matchers are skipped.
-func extractDir(dir string, idx *ViewIndex, initMatchers []ignoreEntry) error {
+// Every visited entry is appended to manifest for cache validation.
+func extractDir(dir string, idx *ViewIndex, initMatchers []ignoreEntry, manifest *[]statEntry) error {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return nil
 	}
@@ -152,6 +176,7 @@ func extractDir(dir string, idx *ViewIndex, initMatchers []ignoreEntry) error {
 		if err != nil {
 			return nil
 		}
+		appendStat(manifest, path, d)
 		if d.IsDir() {
 			if isIgnored(matchers, path) {
 				return filepath.SkipDir
