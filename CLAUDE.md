@@ -186,9 +186,19 @@ call first. The first call that resolves to a view construction records the full
 chain in `seen[basePos]`; inner nodes see the key and skip. This means chained
 constructions (`View::factory()->set()->bind()`) are captured correctly.
 
-**Known limitation — split assignment**: `$view = View::factory('x'); $view->set('y', $z);`
-will NOT capture the `set` vars because `$view` is an `ExprVariable` at the `set`
-call site. Variable scope tracking is needed to fix this; planned for v0.2.x.
+**Split-assignment scope tracking** (implemented in `extractVisitor`):
+- `ExprAssign` fires before its children (DFS pre-order). When the RHS is a view
+  construction, the usage is recorded immediately (marking `basePos` as `seen`) and
+  the LHS variable name is stored in `scope[varName] = usageIdx`.
+- `ExprMethodCall.tryScopeAttribution` fires for every method call. If the direct
+  receiver is an `ExprVariable` tracked in `scope`, it appends vars from `set/bind`
+  to the stored usage — no `tryExtractChain` needed.
+- Scope is cleared (`StmtClassMethod`, `StmtFunction`, `ExprClosure`,
+  `ExprArrowFunction`) so method variables don't bleed across boundaries.
+- `exprVariableName` normalises variable names to always include `$` prefix,
+  handling both `"$view"` and `"view"` from VKCOM (depending on parser version).
+- **Limitation**: `$view->set('a')->set('b')` only captures `'a'` (direct receiver),
+  not `'b'` (chained on the result). Multi-hop scope chains are deferred.
 
 **`ExprStaticCall.Call` vs `.Method`**: VKCOM parser uses `Call` (not `Method`) for
 the method name field of static calls (`View::factory`). Instance method calls

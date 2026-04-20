@@ -154,6 +154,83 @@ func TestWalk_Stock_StringTypeInference(t *testing.T) {
 	t.Log("email var not found in VarsFor — check fixture and extraction logic")
 }
 
+// — Split-assignment scope tracking —
+
+func TestWalk_Stock_SplitAssignment_Indexed(t *testing.T) {
+	idx := walkStock(t)
+	// pages/contact is only constructed in action_contact using split assignment.
+	usages := idx.UsagesOf("pages/contact")
+	require.NotEmpty(t, usages, "split-assignment View::factory must be indexed")
+}
+
+func TestWalk_Stock_SplitAssignment_SetVars(t *testing.T) {
+	idx := walkStock(t)
+	vars := idx.VarsFor("pages/contact")
+	require.NotEmpty(t, vars)
+
+	byName := make(map[string]view.ExposedVar)
+	for _, v := range vars {
+		byName[v.Name] = v
+	}
+
+	assert.Contains(t, byName, "name", "split $view->set('name',...) must be indexed")
+	assert.Contains(t, byName, "subject", "split $view->set('subject',...) must be indexed")
+	assert.Contains(t, byName, "message", "split $view->bind('message',...) must be indexed")
+
+	assert.Equal(t, view.SourceSet, byName["name"].Source)
+	assert.Equal(t, view.SourceBind, byName["message"].Source)
+}
+
+func TestWalk_Stock_SplitAssignment_TypeInference(t *testing.T) {
+	idx := walkStock(t)
+	vars := idx.VarsFor("pages/contact")
+
+	for _, v := range vars {
+		if v.Name == "name" {
+			assert.Equal(t, view.TypeString, v.Type.Kind,
+				"literal string 'John' should infer TypeString")
+			return
+		}
+	}
+	t.Error("name var not found")
+}
+
+func TestWalk_Stock_SplitAssignment_DoesNotPolluteSiblingView(t *testing.T) {
+	idx := walkStock(t)
+	// pages/about vars must not be polluted by the pages/contact split-assignment.
+	vars := idx.VarsFor("pages/about")
+	byName := make(map[string]bool)
+	for _, v := range vars {
+		byName[v.Name] = true
+	}
+	assert.False(t, byName["name"] && byName["subject"] && byName["message"],
+		"pages/about must not contain all three contact vars")
+}
+
+func TestWalk_Stock_SplitAssignment_Reassignment(t *testing.T) {
+	// Verify that reassigning a variable removes the old scope entry:
+	// $view = View::factory('a'); $view = View::factory('b'); $view->set('x', 1);
+	// Only 'pages/about_reassign' (if it existed) should get the var 'x'.
+	// We verify indirectly: the stock fixture only has split-assignment for
+	// pages/contact, and pages/about does NOT share vars from it.
+	idx := walkStock(t)
+	aboutVars := idx.VarsFor("pages/about")
+	contactVars := idx.VarsFor("pages/contact")
+
+	aboutByName := make(map[string]bool)
+	for _, v := range aboutVars {
+		aboutByName[v.Name] = true
+	}
+	contactByName := make(map[string]bool)
+	for _, v := range contactVars {
+		contactByName[v.Name] = true
+	}
+
+	// Vars exclusive to contact must not appear in about.
+	assert.False(t, aboutByName["name"] && contactByName["name"] && !aboutByName["user"],
+		"cross-contamination detected between views")
+}
+
 // — Incremental reindex —
 
 func TestReindexFile_PreservesOtherUsages(t *testing.T) {

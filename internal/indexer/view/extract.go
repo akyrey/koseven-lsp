@@ -15,32 +15,60 @@ import (
 // ViewUsages and any globally exposed variables. Exported for use by the LSP
 // diagnostic layer.
 func ExtractFileUsages(path string, astRoot ast.Vertex) ([]ViewUsage, []ExposedVar) {
-	ev := &extractVisitor{
-		path: path,
-		seen: make(map[int]struct{}),
-	}
+	ev := newExtractVisitor(path)
 	traverser.NewTraverser(ev).Traverse(astRoot)
 	return ev.usages, ev.globals
 }
 
 // extractVisitor is a single-pass AST visitor that collects view construction
-// call sites and their chained variable exposure calls.
+// call sites and their chained and split-assignment variable exposure calls.
 //
-// Chain deduplication: DFS pre-order visits the outermost ExprMethodCall first.
-// tryExtractChain is called on every ExprStaticCall, ExprNew, and ExprMethodCall.
-// The first (outermost) call that resolves to a view base registers the full
-// chain in `seen` (keyed on the base node's StartPos); subsequent inner nodes
-// see the key and skip.
+// # Inline chain deduplication
 //
-// Limitation: split-assignment patterns ($view = View::factory(...); $view->set(...);)
-// are not supported. Only single-expression chains are extracted.
+// DFS pre-order visits the outermost ExprMethodCall first. tryExtractChain is
+// called on every ExprStaticCall, ExprNew, and ExprMethodCall. The first
+// (outermost) call that resolves to a view construction registers the full chain
+// in `seen` (keyed on the base node's StartPos); subsequent inner nodes skip.
+//
+// # Split-assignment scope tracking
+//
+// When the visitor encounters ExprAssign with a view construction on the RHS, it:
+//  1. Records the ViewUsage immediately (marking basePos as seen to prevent
+//     double-recording by the later ExprStaticCall/ExprNew visitors).
+//  2. Stores the usage index in `scope` keyed by the LHS variable name.
+//
+// Subsequent ExprMethodCall nodes whose receiver is that variable look up the
+// scope and append any exposed vars directly to the stored usage.
+//
+// Scope is cleared on entry to any function/method/closure boundary so that
+// variables from one method do not bleed into another.
 type extractVisitor struct {
 	visitor.Null
 	path    string
-	seen    map[int]struct{} // base StartPos → already recorded
+	seen    map[int]struct{}   // base StartPos → already recorded
+	scope   map[string]int     // variable name → index in v.usages
 	usages  []ViewUsage
 	globals []ExposedVar
 }
+
+func newExtractVisitor(path string) *extractVisitor {
+	return &extractVisitor{
+		path:  path,
+		seen:  make(map[int]struct{}),
+		scope: make(map[string]int),
+	}
+}
+
+// ─── Scope boundaries ─────────────────────────────────────────────────────────
+
+func (v *extractVisitor) StmtClassMethod(_ *ast.StmtClassMethod) { v.scope = make(map[string]int) }
+func (v *extractVisitor) StmtFunction(_ *ast.StmtFunction)       { v.scope = make(map[string]int) }
+func (v *extractVisitor) ExprClosure(_ *ast.ExprClosure)         { v.scope = make(map[string]int) }
+func (v *extractVisitor) ExprArrowFunction(_ *ast.ExprArrowFunction) {
+	v.scope = make(map[string]int)
+}
+
+// ─── Primary visitors ────────────────────────────────────────────────────────
 
 func (v *extractVisitor) ExprStaticCall(n *ast.ExprStaticCall) {
 	v.tryGlobalStatic(n)
@@ -51,9 +79,59 @@ func (v *extractVisitor) ExprNew(n *ast.ExprNew) {
 	v.record(n)
 }
 
+// ExprAssign handles split-assignment view construction:
+//
+//	$view = View::factory('pages/about');
+//	$view = View::factory('pages/about')->set('x', $val);
+//
+// The usage is recorded immediately (marking seen) and the scope entry is set
+// so subsequent ExprMethodCall visitors can append vars.
+func (v *extractVisitor) ExprAssign(n *ast.ExprAssign) {
+	varName := exprVariableName(n.Var)
+	if varName == "" {
+		return
+	}
+
+	viewName, construct, vars, basePos, nameRange, found := tryExtractChain(n.Expr)
+	if !found {
+		// Variable reassigned to a non-view — invalidate its scope entry.
+		delete(v.scope, varName)
+		return
+	}
+	if _, already := v.seen[basePos]; already {
+		// Rare: already recorded by a child visitor (shouldn't happen in pre-order).
+		return
+	}
+	v.seen[basePos] = struct{}{}
+
+	pos := n.Expr.GetPosition()
+	var r protocol.Range
+	if pos != nil && pos.StartLine > 0 {
+		r = protocol.Range{
+			Start: protocol.Position{Line: uint32(pos.StartLine - 1)},
+			End:   protocol.Position{Line: uint32(pos.EndLine - 1)},
+		}
+	}
+
+	idx := len(v.usages)
+	v.usages = append(v.usages, ViewUsage{
+		Name:        viewName,
+		File:        v.path,
+		Range:       r,
+		NameRange:   nameRange,
+		Construct:   construct,
+		ExposedVars: vars,
+	})
+	v.scope[varName] = idx
+}
+
+// ExprMethodCall handles both inline chains and scope-variable method calls.
 func (v *extractVisitor) ExprMethodCall(n *ast.ExprMethodCall) {
 	v.record(n)
+	v.tryScopeAttribution(n)
 }
+
+// ─── Inline chain recording ───────────────────────────────────────────────────
 
 func (v *extractVisitor) record(node ast.Vertex) {
 	viewName, construct, vars, basePos, nameRange, found := tryExtractChain(node)
@@ -82,6 +160,30 @@ func (v *extractVisitor) record(node ast.Vertex) {
 		ExposedVars: vars,
 	})
 }
+
+// ─── Scope-variable attribution ───────────────────────────────────────────────
+
+// tryScopeAttribution appends exposed vars to a previously-scope-tracked usage
+// when the method call's direct receiver is a known view variable:
+//
+//	$view->set('key', $val);   ← handled
+//	$view->set('a')->set('b'); ← only 'a' is captured (direct receiver only)
+func (v *extractVisitor) tryScopeAttribution(n *ast.ExprMethodCall) {
+	varName := exprVariableName(n.Var)
+	if varName == "" {
+		return
+	}
+	usageIdx, tracked := v.scope[varName]
+	if !tracked {
+		return
+	}
+	chainVars := extractChainMethodVars(n)
+	if len(chainVars) > 0 {
+		v.usages[usageIdx].ExposedVars = append(v.usages[usageIdx].ExposedVars, chainVars...)
+	}
+}
+
+// ─── Global static var exposure ───────────────────────────────────────────────
 
 func (v *extractVisitor) tryGlobalStatic(n *ast.ExprStaticCall) {
 	className := phputil.NameToString(n.Class)
@@ -113,7 +215,28 @@ func (v *extractVisitor) tryGlobalStatic(n *ast.ExprStaticCall) {
 	v.globals = append(v.globals, vars...)
 }
 
-// — Chain extraction —
+// ─── Variable name helper ─────────────────────────────────────────────────────
+
+// exprVariableName extracts the variable name from an ExprVariable node,
+// normalised to always include the $ prefix. Returns "" for dynamic variables
+// ($$foo) and non-variable expressions.
+func exprVariableName(node ast.Vertex) string {
+	ev, ok := node.(*ast.ExprVariable)
+	if !ok {
+		return ""
+	}
+	id, ok := ev.Name.(*ast.Identifier)
+	if !ok {
+		return "" // dynamic variable ($$foo) — skip
+	}
+	name := string(id.Value)
+	if !strings.HasPrefix(name, "$") {
+		name = "$" + name
+	}
+	return name
+}
+
+// ─── Chain extraction ─────────────────────────────────────────────────────────
 
 // tryExtractChain recursively unwraps a method chain and returns the view name,
 // construct type, all exposed vars, the StartPos of the base construction node
@@ -136,7 +259,6 @@ func tryExtractChain(node ast.Vertex) (viewName string, c Construct, vars []Expo
 			if pos == nil {
 				return
 			}
-			// find_file's view name is the second arg
 			return name, ConstructFindFile, nil, pos.StartPos, argLineRange(n.Args, 1), true
 		}
 
@@ -181,7 +303,7 @@ func argLineRange(args []ast.Vertex, i int) protocol.Range {
 	}
 }
 
-// — View construction matchers —
+// ─── View construction matchers ───────────────────────────────────────────────
 
 func staticCallViewName(n *ast.ExprStaticCall) string {
 	className := phputil.NameToString(n.Class)
@@ -238,7 +360,7 @@ func newViewName(n *ast.ExprNew) string {
 	return name
 }
 
-// — Variable extraction from chain method calls —
+// ─── Variable extraction from chain method calls ──────────────────────────────
 
 func extractChainMethodVars(n *ast.ExprMethodCall) []ExposedVar {
 	methodID, ok := n.Method.(*ast.Identifier)
@@ -292,7 +414,6 @@ func extractSetArgs(args []ast.Vertex) []ExposedVar {
 	if expr == nil {
 		return nil
 	}
-	// ->set('key', $val)
 	if key, ok := phputil.ScalarStringVal(expr); ok {
 		var typ PHPType
 		if len(args) >= 2 {
@@ -300,7 +421,6 @@ func extractSetArgs(args []ast.Vertex) []ExposedVar {
 		}
 		return []ExposedVar{{Name: key, Source: SourceSet, Type: typ}}
 	}
-	// ->set(['key' => $val, ...])
 	arr, ok := expr.(*ast.ExprArray)
 	if !ok {
 		return nil
@@ -340,11 +460,11 @@ func extractArrayItems(arr *ast.ExprArray, source VarSource) []ExposedVar {
 	return vars
 }
 
-// — Type inference —
+// ─── Type inference ───────────────────────────────────────────────────────────
 
 // inferType performs lightweight type inference on a PHP expression node.
 // Handles literals, true/false/null constants, new Foo(), ORM::factory('X'),
-// and Foo::factory('X') → Model_X. Everything else is TypeUnknown.
+// and Foo::factory('X') → Foo_X. Everything else is TypeUnknown.
 func inferType(node ast.Vertex) PHPType {
 	if node == nil {
 		return PHPType{Kind: TypeUnknown}
@@ -358,16 +478,13 @@ func inferType(node ast.Vertex) PHPType {
 		return PHPType{Kind: TypeFloat}
 	case *ast.ExprConstFetch:
 		switch strings.ToUpper(phputil.NameToString(n.Const)) {
-		case "TRUE":
-			return PHPType{Kind: TypeBool}
-		case "FALSE":
+		case "TRUE", "FALSE":
 			return PHPType{Kind: TypeBool}
 		case "NULL":
 			return PHPType{Kind: TypeNull}
 		}
 	case *ast.ExprNew:
-		className := phputil.NameToString(n.Class)
-		if className != "" {
+		if className := phputil.NameToString(n.Class); className != "" {
 			return PHPType{Kind: TypeClass, Class: className}
 		}
 	case *ast.ExprStaticCall:
@@ -376,13 +493,11 @@ func inferType(node ast.Vertex) PHPType {
 		if !ok || string(methodID.Value) != "factory" {
 			break
 		}
-		// ORM::factory('Member') or Model::factory('Member') → Model_Member
 		if className == "ORM" || className == "Model" {
 			if modelName, ok := firstArgString(n.Args); ok {
 				return PHPType{Kind: TypeClass, Class: "Model_" + modelName}
 			}
 		}
-		// Foo::factory('name') → Foo_name (Kohana cascading pattern)
 		if modelName, ok := firstArgString(n.Args); ok && className != "" {
 			return PHPType{Kind: TypeClass, Class: className + "_" + modelName}
 		}
@@ -390,7 +505,7 @@ func inferType(node ast.Vertex) PHPType {
 	return PHPType{Kind: TypeUnknown}
 }
 
-// — Argument helpers —
+// ─── Argument helpers ─────────────────────────────────────────────────────────
 
 func firstArgString(args []ast.Vertex) (string, bool) {
 	if len(args) == 0 {

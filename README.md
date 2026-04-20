@@ -19,7 +19,19 @@ Generic PHP language servers (Intelephense, Psalm) have no knowledge of Koseven'
 - **`Kohana::message('file', ...)` go-to-def** — cursor on the file name argument jumps to `messages/file.php` in the cascade.
 - **Document symbols with variable list** — `:Telescope lsp_document_symbols` (or equivalent) inside a view file shows the view name with all its exposed variables as children, including inferred types.
 
-**Type inference** (inside `->set()` and factory arrays): string/int/float/bool/null literals are typed exactly; `new Foo()` → `Foo`; `ORM::factory('Member')` / `Model::factory('Member')` → `Model_Member`; `Foo::factory('Bar')` → `Foo_Bar`. Variables passed through assignments are not yet inferred (single-expression chains only).
+**Type inference** (inside `->set()` and factory arrays): string/int/float/bool/null literals are typed exactly; `new Foo()` → `Foo`; `ORM::factory('Member')` / `Model::factory('Member')` → `Model_Member`; `Foo::factory('Bar')` → `Foo_Bar`.
+
+**Split-assignment support**: both chained and split patterns are indexed:
+```php
+// Chained (always supported):
+View::factory('pages/about')->set('user', ORM::factory('User'));
+
+// Split (now supported):
+$view = View::factory('pages/about');
+$view->set('user', ORM::factory('User'));
+$view->bind('errors', $errors);
+```
+Scope is reset per function/method/closure boundary so variables from one method cannot bleed into another.
 
 **Cascade awareness**: reads `application/bootstrap.php` to discover enabled modules and their load order. `Kohana::modules([...])` must be a static array literal (dynamic/conditional loading is not supported).
 

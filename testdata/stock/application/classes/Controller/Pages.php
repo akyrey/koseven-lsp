@@ -22,4 +22,14 @@ class Controller_Pages extends Controller {
         ]);
         $this->response->body($view);
     }
+
+    public function action_contact()
+    {
+        // Split-assignment pattern: view built first, vars set on separate lines.
+        $view = View::factory('pages/contact');
+        $view->set('name', 'John');
+        $view->set('subject', 'Hello');
+        $view->bind('message', $msg);
+        $this->response->body($view);
+    }
 }
