@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	protocol "github.com/tliron/glsp/protocol_3_16"
 
 	"github.com/akyrey/koseven-lsp/internal/phputil"
 )
@@ -110,6 +111,48 @@ func TestCollectViewRenameEdits_FixtureController(t *testing.T) {
 		assert.Equal(t, "'pages/home'", e.NewText)
 		// Verify line is plausible (> 0).
 		assert.Greater(t, e.Range.Start.Line, uint32(0))
+	}
+}
+
+// ─── viewFileNewPath ─────────────────────────────────────────────────────────
+
+func TestViewFileNewPath_SimpleRename(t *testing.T) {
+	defPath := "/project/application/views/pages/about.php"
+	got := viewFileNewPath(defPath, "pages/about", "pages/home")
+	assert.Equal(t, "/project/application/views/pages/home.php", got)
+}
+
+func TestViewFileNewPath_NestedRename(t *testing.T) {
+	defPath := "/project/application/views/pages/about.php"
+	got := viewFileNewPath(defPath, "pages/about", "section/pages/home")
+	assert.Equal(t, "/project/application/views/section/pages/home.php", got)
+}
+
+func TestViewFileNewPath_NoMatch(t *testing.T) {
+	defPath := "/project/application/views/pages/other.php"
+	got := viewFileNewPath(defPath, "pages/about", "pages/home")
+	assert.Equal(t, "", got, "non-matching path must return empty string")
+}
+
+// ─── textEditsToDocChanges ────────────────────────────────────────────────────
+
+func TestTextEditsToDocChanges_PopulatesTextDocumentEdits(t *testing.T) {
+	changes := map[protocol.DocumentUri][]protocol.TextEdit{
+		"file:///a.php": {
+			{Range: protocol.Range{}, NewText: "'new'"},
+		},
+		"file:///b.php": {
+			{Range: protocol.Range{}, NewText: "'new'"},
+			{Range: protocol.Range{}, NewText: "'new'"},
+		},
+	}
+	docChanges := textEditsToDocChanges(changes)
+	assert.Len(t, docChanges, 2)
+	for _, dc := range docChanges {
+		tde, ok := dc.(protocol.TextDocumentEdit)
+		require.True(t, ok, "each entry must be a TextDocumentEdit")
+		assert.NotEmpty(t, tde.TextDocument.URI)
+		assert.NotEmpty(t, tde.Edits)
 	}
 }
 

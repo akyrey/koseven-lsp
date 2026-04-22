@@ -100,7 +100,27 @@ func (s *Server) Rename(_ *glsp.Context, p *protocol.RenameParams) (*protocol.Wo
 	if len(changes) == 0 {
 		return nil, nil
 	}
-	return &protocol.WorkspaceEdit{Changes: changes}, nil
+
+	// Build documentChanges: TextDocumentEdit per file + RenameFile per view
+	// definition. Clients that support documentChanges use this; others fall
+	// back to the changes map (text edits only).
+	docChanges := textEditsToDocChanges(changes)
+	for _, def := range idx.Resolve(oldName) {
+		newPath := viewFileNewPath(def.Path, oldName, newName)
+		if newPath == "" {
+			continue
+		}
+		docChanges = append(docChanges, protocol.RenameFile{
+			Kind:   "rename",
+			OldURI: string(PathToURI(def.Path)),
+			NewURI: string(PathToURI(newPath)),
+		})
+	}
+
+	return &protocol.WorkspaceEdit{
+		Changes:         changes,
+		DocumentChanges: docChanges,
+	}, nil
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -358,4 +378,37 @@ func (v *renameVisitor) addEditIfMatch(expr ast.Vertex) {
 		Range:   toLSPRange(loc, v.src),
 		NewText: newText,
 	})
+}
+
+// ─── File rename helpers ──────────────────────────────────────────────────────
+
+// viewFileNewPath computes the new on-disk path for a view definition file
+// when the view is renamed from oldName to newName. Returns "" when defPath
+// does not end with the expected suffix (safe no-op for unexpected index entries).
+func viewFileNewPath(defPath, oldName, newName string) string {
+	oldSuffix := string(filepath.Separator) + filepath.FromSlash(oldName) + ".php"
+	if !strings.HasSuffix(defPath, oldSuffix) {
+		return ""
+	}
+	return strings.TrimSuffix(defPath, oldSuffix) +
+		string(filepath.Separator) + filepath.FromSlash(newName) + ".php"
+}
+
+// textEditsToDocChanges converts a URI→[]TextEdit changes map into
+// []TextDocumentEdit values for WorkspaceEdit.DocumentChanges.
+func textEditsToDocChanges(changes map[protocol.DocumentUri][]protocol.TextEdit) []any {
+	out := make([]any, 0, len(changes))
+	for uri, edits := range changes {
+		editsAny := make([]any, len(edits))
+		for i, e := range edits {
+			editsAny[i] = e
+		}
+		out = append(out, protocol.TextDocumentEdit{
+			TextDocument: protocol.OptionalVersionedTextDocumentIdentifier{
+				TextDocumentIdentifier: protocol.TextDocumentIdentifier{URI: uri},
+			},
+			Edits: editsAny,
+		})
+	}
+	return out
 }
