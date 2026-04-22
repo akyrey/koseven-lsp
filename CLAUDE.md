@@ -9,7 +9,7 @@ Kohana 3.3 fork). It provides go-to-definition, find-references, and inferred
 variable hover/completion for Koseven-specific conventions that generic PHP
 language servers (Intelephense, Psalm) have no knowledge of: the cascading
 filesystem view resolver, `View::factory` variable injection, `ORM::factory` type
-mapping, and HMVC module overrides.
+mapping, HMVC module overrides, and route-to-controller/action navigation.
 
 The architecture mirrors `~/personal/laravel-ls`: same PHP parser (VKCOM),
 same LSP framework (tliron/glsp), same atomic-swap index pattern, same debounced
@@ -45,22 +45,26 @@ make install      # go install ./cmd/koseven-lsp
 cmd/koseven-lsp/main.go             # entry point only — no logic here
 internal/
   config/
-    config.go                       # Config struct + Load() + Defaults()
+    config.go                       # Config struct + Load() + Defaults() + RouteHelper
   indexer/view/
     types.go                        # ViewDefinition, ViewUsage, ExposedVar, PHPType, Index iface
     index.go                        # ViewIndex — concrete Index implementation + withoutFile()
     walk.go                         # Walk() + ReindexFile() + discoverViews + extractDir
-    extract.go                      # extractVisitor + tryExtractChain + inferType
+    extract.go                      # extractVisitor + tryExtractChain + inferType + resolveScope
+    cache.go                        # disk cache: tryLoadCache, saveCache, manifest validation
+    gitignore.go                    # ignoreEntry, tryLoadIgnoreFile, isIgnored
   lsp/
     server.go                       # Server struct — cascadeState(), reindex(), reindexFiles(), watcher
-    definition.go                   # textDocument/definition — view, ORM::factory, Kohana::find_file
+    definition.go                   # textDocument/definition — view, routes, ORM::factory, find_file
     references.go                   # textDocument/references — view-file mode + string mode
     hover.go                        # textDocument/hover — view hover + $var type hover
     completion.go                   # textDocument/completion — $var list in view files
     diagnostics.go                  # textDocument/publishDiagnostics — missing-view opt-in
     symbols.go                      # workspace/symbol — view name fuzzy search
     rename.go                       # textDocument/rename + prepareRename + workspace/willRenameFiles
-    handlers.go                     # textDocument/documentSymbol (stub)
+    routes.go                       # route/controller/action go-to-def finders + locateControllerAction
+    codeaction.go                   # textDocument/codeAction — rename view code action
+    handlers.go                     # textDocument/documentSymbol — view name + var children + full-file range
     documents.go                    # DocumentStore — in-memory cache with disk fallback
     uri.go                          # URIToPath, PathToURI, toLSPLocation, UTF-16 column math
   phpparse/
@@ -230,10 +234,12 @@ index not yet built), the file's edits are skipped safely.
 The first successful relative path (no `..` prefix) wins. This is the inverse of
 `discoverViews` in `walk.go`, which uses the same logic in forward direction.
 
-**Rename only updates string literals, not the file**: `textDocument/rename` replaces
-every view name string literal (including quotes, preserving single/double quote style)
-across all usage files. It does NOT rename the `.php` view file on disk — that requires
-either `workspace/willRenameFiles` (planned) or the developer renaming the file manually.
+**`textDocument/rename` now renames the file too**: the response includes both
+`changes` (text edits for string literals, for clients without resource-operation support)
+and `documentChanges` (`TextDocumentEdit` entries + a `RenameFile` resource operation per
+view definition in the cascade). Clients that support `documentChanges` apply the file
+rename atomically alongside the string updates. `workspace/willRenameFiles` is a no-op
+for this case because the strings are already updated before the file rename fires.
 
 **Cascade go-to-def uses stat-checks, not an index**: `ORM::factory` and
 `Kohana::find_file` (non-view) resolve files with `project.FindCascadeFiles` — a
@@ -250,6 +256,60 @@ new index where `byName`/`byPath` are shared (definitions), only `usages` is
 filtered. This is safe because `ReindexFile` only updates usages; view file
 creation/deletion requires a full `Walk`.
 
+**Route/controller navigation** (`internal/lsp/routes.go`):
+
+Four call-site finders are run in order by `findRouteAtOffset`; first match wins:
+
+1. `routeDefaultsFinder` — `Route::set(...)->defaults([...])`. Walks the `Var` chain
+   via `isRouteSetRoot` to handle intermediate calls like `->filter(...)`. Extracts
+   `controller`/`action`/`directory` keys from the defaults array; records which key
+   contains the cursor.
+
+2. `routeURLFinder` — `Route::url('name', [...])`. Same array extraction from the
+   second argument.
+
+3. `requestFactoryFinder` — `Request::factory()->controller('x')->action('y')`.
+   Confirms the chain roots at a `Request` static call via `chainVarRoot` +
+   `isRequestChainRoot`. Cursor on `action('y')` walks upstream via
+   `chainMethodString(n.Var, "controller")` to find the sibling controller value.
+   Cursor on `controller('x')` only resolves the controller file (action is downstream,
+   not accessible via `Var`).
+
+4. `routeHelperFinder` — user-configured helpers from `Config.RouteHelpers`. Matches
+   `ExprStaticCall` (class::method) or `ExprFunctionCall` (global function) by name.
+   Captures values from the configured positional arg indices.
+
+**Shared resolver** — `locateControllerAction(root, cfg, modules, controller, action, directory)`:
+- Builds class name: `Controller_[Dir_]Ctrl` via `buildControllerClassName` +
+  `titleCaseSegments` (`"pages"` → `"Pages"`, `"auth_user"` → `"Auth_User"`).
+- Resolves file via `project.FindCascadeFiles(root, cfg, modules, "classes", relPath)`
+  (reuses the same stat-based lookup used for ORM and find_file).
+- If action is non-empty, parses the resolved file and uses `actionMethodFinder` to
+  find the `action_<name>` method line (0-based). Falls back to line 0 on miss.
+
+**Definition dispatch order** (definition.go):
+1. View names (index-based)
+2. Route/controller/action (routes.go finders)
+3. ORM/Model factory
+4. `Kohana::find_file` non-view
+5. `Kohana::message`
+
+**Config** (`Config.RouteHelpers []RouteHelper`): each helper has `Name string` ("Class::method"
+or bare function name) and `*int` pointer fields `Controller`, `Action`, `Directory` for
+0-based arg indices (nil = not applicable). Multiple helpers use repeated `[[route_helpers]]`
+TOML blocks.
+
+**Index cache** (`internal/indexer/view/cache.go`): persisted to
+`<root>/.cache/koseven-ls/index.gob`. Invalidated when any manifest entry (file or
+directory visited during Walk) has a changed `ModTime`, or when the config hash changes.
+Saved asynchronously after each full `Walk`. View definition file changes (rename,
+creation) trigger a full `Walk` (not incremental reindex) so the cache is refreshed.
+
+**`.gitignore` support** (`internal/indexer/view/gitignore.go`): both `discoverViews`
+and `extractDir` load `.gitignore` matchers dynamically as they descend. Each matcher
+is scoped to its base directory via a `filepath.Rel` ancestor check, so sibling
+directories' rules don't bleed across.
+
 ## Open questions (to answer before next iteration)
 
 1. Is `application/bootstrap.php` always at that exact path, or should
@@ -259,8 +319,3 @@ creation/deletion requires a full `Walk`.
    list works unchanged.)
 3. Case sensitivity of view names — does the project rely on case-insensitive
    resolution (e.g. `pages/About` → `pages/about.php`)?
-4. Should the index walk respect `.gitignore`, or walk everything under the
-   known cascade roots only?
-5. Cache location — `.cache/koseven-ls/` in project root, or XDG cache dir?
-6. Variable scope tracking priority — how common is the split-assignment pattern
-   (`$view = View::factory(...); $view->set(...)`) in the real codebase?

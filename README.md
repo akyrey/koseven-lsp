@@ -128,7 +128,32 @@ extra_view_roots = []
 # Emit a diagnostic when View::factory('x') resolves to no file.
 # Disabled by default to avoid noise during file moves / renames.
 missing_views = false
+
+# Register custom functions/static methods that take controller and action as
+# positional string arguments, enabling go-to-definition from those call sites.
+# Use one [[route_helpers]] block per function. Fields:
+#   name       = "ClassName::method"  or just "function_name" for global functions
+#   controller = 0-based arg index of the controller string (omit if not present)
+#   action     = 0-based arg index of the action string    (omit if not present)
+#   directory  = 0-based arg index of the HMVC directory   (omit if not present)
+#
+# Example — Skp_Helper::getWidget(string $controller, string $action, ...):
+[[route_helpers]]
+name       = "Skp_Helper::getWidget"
+controller = 0
+action     = 1
+
+# Additional helpers — repeat the block for each function:
+# [[route_helpers]]
+# name       = "My_Helper::renderPartial"
+# controller = 0
+# action     = 1
+# directory  = 2
 ```
+
+### Cache
+
+The index is persisted to `.cache/koseven-ls/index.gob` in the project root after each full walk. Subsequent server starts load from this cache and skip re-parsing when no files have changed. Add `.cache/koseven-ls/` to your `.gitignore`.
 
 ## Project layout
 
@@ -171,16 +196,12 @@ Always run `make test-race` before committing.
 
 ## Roadmap
 
-**v0.2.x**
-- `ORM::factory('Member')` → `classes/Model/Member.php` go-to-definition
-- `Kohana::find_file('classes'|'i18n'|'messages', ...)` go-to-definition
-- Code action: insert `->set('foo', null)` for an unset view variable
-
-**v0.3.x**
-- `Kohana::message('file.key')` completion and navigation
+**Next**
+- `Kohana::message` completion — suggest message keys from `messages/*.php` files
 - `__('key')` i18n completion
-- `Kohana::$config->load('group.key')` completion
+- `Kohana::$config->load('group.key')` completion and navigation
 - Diagnostic for unused `->set()` vars (opt-in)
+- `Route::url()` completion — suggest registered route names
 
 ## License
 
