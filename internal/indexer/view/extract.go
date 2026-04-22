@@ -166,17 +166,15 @@ func (v *extractVisitor) record(node ast.Vertex) {
 
 // ─── Scope-variable attribution ───────────────────────────────────────────────
 
-// tryScopeAttribution appends exposed vars to a previously-scope-tracked usage
-// when the method call's direct receiver is a known view variable:
+// tryScopeAttribution appends exposed vars to a previously-scope-tracked usage.
+// It handles both direct and chained receivers:
 //
-//	$view->set('key', $val);   ← handled
-//	$view->set('a')->set('b'); ← only 'a' is captured (direct receiver only)
+//	$view->set('key', $val);          ← direct receiver ($view)
+//	$view->set('a')->set('b');        ← chained: outer receiver is ->set('a'),
+//	                                     resolveScope follows it back to $view
+//	$view->set('a')->set('b')->bind('c', $r); ← three-hop chain, all captured
 func (v *extractVisitor) tryScopeAttribution(n *ast.ExprMethodCall) {
-	varName := exprVariableName(n.Var)
-	if varName == "" {
-		return
-	}
-	usageIdx, tracked := v.scope[varName]
+	usageIdx, tracked := v.resolveScope(n.Var)
 	if !tracked {
 		return
 	}
@@ -184,6 +182,25 @@ func (v *extractVisitor) tryScopeAttribution(n *ast.ExprMethodCall) {
 	if len(chainVars) > 0 {
 		v.usages[usageIdx].ExposedVars = append(v.usages[usageIdx].ExposedVars, chainVars...)
 	}
+}
+
+// resolveScope follows a receiver expression back to the underlying scoped
+// variable, traversing ExprMethodCall chains transparently. Returns the usage
+// index and true when the expression ultimately resolves to a variable that is
+// tracked in v.scope.
+func (v *extractVisitor) resolveScope(expr ast.Vertex) (int, bool) {
+	switch e := expr.(type) {
+	case *ast.ExprVariable:
+		varName := exprVariableName(e)
+		if varName == "" {
+			return 0, false
+		}
+		idx, tracked := v.scope[varName]
+		return idx, tracked
+	case *ast.ExprMethodCall:
+		return v.resolveScope(e.Var)
+	}
+	return 0, false
 }
 
 // ─── Global static var exposure ───────────────────────────────────────────────

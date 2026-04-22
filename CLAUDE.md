@@ -190,15 +190,14 @@ constructions (`View::factory()->set()->bind()`) are captured correctly.
 - `ExprAssign` fires before its children (DFS pre-order). When the RHS is a view
   construction, the usage is recorded immediately (marking `basePos` as `seen`) and
   the LHS variable name is stored in `scope[varName] = usageIdx`.
-- `ExprMethodCall.tryScopeAttribution` fires for every method call. If the direct
-  receiver is an `ExprVariable` tracked in `scope`, it appends vars from `set/bind`
-  to the stored usage — no `tryExtractChain` needed.
+- `ExprMethodCall.tryScopeAttribution` fires for every method call. `resolveScope`
+  follows the receiver chain — `ExprVariable` terminates the search, `ExprMethodCall`
+  recurses into its own receiver — so both direct and multi-hop chains are captured:
+  `$view->set('a')->set('b')->bind('c', $r)` captures all three variables.
 - Scope is cleared (`StmtClassMethod`, `StmtFunction`, `ExprClosure`,
   `ExprArrowFunction`) so method variables don't bleed across boundaries.
 - `exprVariableName` normalises variable names to always include `$` prefix,
   handling both `"$view"` and `"view"` from VKCOM (depending on parser version).
-- **Limitation**: `$view->set('a')->set('b')` only captures `'a'` (direct receiver),
-  not `'b'` (chained on the result). Multi-hop scope chains are deferred.
 
 **`ExprStaticCall.Call` vs `.Method`**: VKCOM parser uses `Call` (not `Method`) for
 the method name field of static calls (`View::factory`). Instance method calls
@@ -207,9 +206,8 @@ the method name field of static calls (`View::factory`). Instance method calls
 **`NameRange` vs `Range` in ViewUsage**: `Range` spans the full construction expression
 (for watcher/index tracking). `NameRange` spans only the string literal (for references
 and diagnostics shown in the editor). Use `usageRange(u)` in `lsp/` code, which prefers
-`NameRange` when non-zero. `NameRange` is line-level only (Character: 0) because the
-extractor doesn't have source bytes available. Full column precision would require
-threading `src []byte` through `extractFileUsages`.
+`NameRange` when non-zero. `NameRange` carries precise UTF-16 column offsets computed
+from `src []byte` threaded through `ExtractFileUsages` → `argPreciseRange`.
 
 **Diagnostics are opt-in**: `diagnostics.missing_views` defaults to `false`. Pushed on
 `DidOpen`, `DidChange`, and cleared (empty list) on `DidClose`. Background reindex does
