@@ -8,3 +8,9 @@ define('SYSPATH', realpath(dirname(__FILE__).'/../system').DIRECTORY_SEPARATOR);
 Kohana::modules([
     // No modules enabled in the stock fixture.
 ]);
+
+Route::set('default', '(<controller>(/<action>(/<id>)))')
+    ->defaults([
+        'controller' => 'pages',
+        'action'     => 'about',
+    ]);

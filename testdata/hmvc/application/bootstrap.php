@@ -9,3 +9,10 @@ Kohana::modules([
     'blog' => MODPATH.'blog',
     'auth' => MODPATH.'auth',
 ]);
+
+Route::set('admin', 'admin(/<action>(/<id>))')
+    ->defaults([
+        'directory'  => 'admin',
+        'controller' => 'users',
+        'action'     => 'index',
+    ]);

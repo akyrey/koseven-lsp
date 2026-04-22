@@ -26,7 +26,33 @@ type Config struct {
 	// include as view roots in the cascade.
 	ExtraViewRoots []string `toml:"extra_view_roots"`
 
-	Diagnostics DiagnosticsConfig `toml:"diagnostics"`
+	Diagnostics  DiagnosticsConfig `toml:"diagnostics"`
+	RouteHelpers []RouteHelper     `toml:"route_helpers"`
+}
+
+// RouteHelper registers a custom function or static method that takes
+// controller and/or action as positional string arguments, enabling
+// go-to-definition navigation from those call sites.
+// Use nil pointer fields to indicate "this arg is not a controller/action/directory".
+//
+// Example koseven-ls.toml entry:
+//
+//	[[route_helpers]]
+//	name       = "Skp_Helper::getWidget"
+//	controller = 0
+//	action     = 1
+type RouteHelper struct {
+	// Name is "ClassName::method" for static calls, or a bare function name.
+	Name string `toml:"name"`
+	// Controller is the 0-based argument index that holds the controller name.
+	// Nil means this helper does not carry a controller argument.
+	Controller *int `toml:"controller"`
+	// Action is the 0-based argument index that holds the action name.
+	// Nil means this helper does not carry an action argument.
+	Action *int `toml:"action"`
+	// Directory is the 0-based argument index that holds the HMVC directory.
+	// Nil means this helper does not carry a directory argument.
+	Directory *int `toml:"directory"`
 }
 
 // DiagnosticsConfig holds diagnostic feature toggles.

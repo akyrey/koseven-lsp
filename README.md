@@ -6,39 +6,70 @@ Generic PHP language servers (Intelephense, Psalm) have no knowledge of Koseven'
 
 ## Features
 
-### v0.1.0 (current)
+### View navigation
 
 - **Go-to-definition on view names** — cursor on `'pages/about'` inside `View::factory('pages/about')` or `new View('pages/about', ...)` jumps to the resolved `.php` file. Returns all candidates when the same name exists in multiple modules (HMVC cascade).
 - **Find-references** — open `application/views/pages/about.php` and request references to see every `View::factory`, `new View`, and `Kohana::find_file('views', ...)` call that constructs it. Also works from a PHP file: cursor on a view name string returns all other call sites. Locations point to the string literal, not the full expression.
 - **Inferred view variables** — hover on `$var` inside a view to see its inferred type and originating call sites. `$` completion lists all variables exposed via `->set()`, `->bind()`, the factory second-argument array, `set_global`, and `bind_global`.
 - **Hover on view names** — cursor on a view name string shows the resolved file path, cascade order, and module for each candidate.
-- **Document symbols + workspace symbols** — view files are listed as symbols for `textDocument/documentSymbol` and `workspace/symbol`. Neovim Telescope fuzzy-finder works out of the box.
-- **Missing-view diagnostic** *(opt-in)* — set `diagnostics.missing_views = true` in `koseven-ls.toml` to get a Warning when `View::factory('name')` resolves to no file. Off by default to avoid noise during renames and file moves.
-- **Rename view names** — `grw` (or your editor's rename keybind) on any view name string updates every `View::factory`, `new View`, and `Kohana::find_file('views',...)` call across the project. The physical `.php` view file itself is not renamed automatically — do that in your file manager, then rename the string references here.
-- **File-rename integration** (`workspace/willRenameFiles`) — when you rename a view file via nvim-tree or another LSP-aware file manager, all string references update atomically before the file rename completes. No string is left pointing at the old path.
-- **`Kohana::message('file', ...)` go-to-def** — cursor on the file name argument jumps to `messages/file.php` in the cascade.
-- **Document symbols with variable list** — `:Telescope lsp_document_symbols` (or equivalent) inside a view file shows the view name with all its exposed variables as children, including inferred types.
+- **Document symbols** — `:Telescope lsp_document_symbols` (or equivalent) inside a view file shows the view name with all its exposed variables as children, including inferred types.
+- **Workspace symbols** — `:Telescope lsp_workspace_symbols` fuzzy-searches all indexed view names.
 
 **Type inference** (inside `->set()` and factory arrays): string/int/float/bool/null literals are typed exactly; `new Foo()` → `Foo`; `ORM::factory('Member')` / `Model::factory('Member')` → `Model_Member`; `Foo::factory('Bar')` → `Foo_Bar`.
 
-**Split-assignment support**: both chained and split patterns are indexed:
+**Split-assignment and chained-set support**: all of the following patterns are indexed and variable-tracked:
 ```php
-// Chained (always supported):
+// Inline chain:
 View::factory('pages/about')->set('user', ORM::factory('User'));
 
-// Split (now supported):
+// Split assignment:
 $view = View::factory('pages/about');
 $view->set('user', ORM::factory('User'));
 $view->bind('errors', $errors);
+
+// Multi-hop chained sets on a split variable:
+$view->set('title', 'Hello')->set('body', 'World')->bind('form', $form);
 ```
 Scope is reset per function/method/closure boundary so variables from one method cannot bleed into another.
 
-**Cascade awareness**: reads `application/bootstrap.php` to discover enabled modules and their load order. `Kohana::modules([...])` must be a static array literal (dynamic/conditional loading is not supported).
+### Route and controller navigation
+
+- **`Route::set()->defaults([...])`** — cursor on the `'controller'` value jumps to `classes/Controller/<Name>.php`. Cursor on the `'action'` value jumps directly to the `action_<name>()` method line. The optional `'directory'` key supports HMVC sub-controllers (e.g. `Controller_Admin_Users`).
+- **`Route::url('name', [...])`** — same navigation from the params array passed to `url()`.
+- **`Request::factory()->controller('x')->action('y')`** — cursor on either string navigates to the controller file or action method.
+- **Custom helpers** — configure any static method or global function that takes controller/action as positional string arguments (see [Configuration](#configuration) below).
+
+```php
+// All of these support gd on the string arguments:
+Route::set('default', '(<controller>(/<action>))')
+    ->defaults(['controller' => 'pages', 'action' => 'about']);
+
+Route::url('default', ['controller' => 'pages', 'action' => 'about']);
+
+Request::factory()->controller('pages')->action('about')->execute();
+
+Skp_Helper::getWidget('pages', 'about');  // configured in koseven-ls.toml
+```
+
+Cascade-aware: returns all matching locations when the same controller exists in multiple layers.
+
+### Rename and file operations
+
+- **Rename view names** — `grw` (or your editor's rename keybind) on any view name string updates every `View::factory`, `new View`, and `Kohana::find_file('views',...)` call across the project AND renames the physical `.php` view file on disk (when the client supports `workspace/documentChanges` resource operations).
+- **File-rename integration** (`workspace/willRenameFiles`) — when you rename a view file via nvim-tree or another LSP-aware file manager, all string references update atomically before the file rename completes.
+- **Code action** — a "Rename view '…'" code action appears on any view name string, triggering the editor's built-in rename workflow.
+
+### Other navigation
 
 - **`ORM::factory('Member')` / `Model::factory('Member')`** → jumps to `classes/Model/Member.php` in the cascade. Compound names work: `ORM::factory('Member_Profile')` → `classes/Model/Member/Profile.php`.
-- **`Kohana::find_file('classes', 'Model_Member')`** → jumps to the class file in the cascade. Also works for `'i18n'`, `'messages'`, `'config'`, and `'media'` — any file type Kohana's cascading filesystem supports.
+- **`Kohana::find_file('classes', 'Model_Member')`** → jumps to the class file in the cascade. Also works for `'i18n'`, `'messages'`, `'config'`, and `'media'`.
+- **`Kohana::message('file', ...)`** → jumps to `messages/file.php` in the cascade.
 
-Both features do direct filesystem stat-checks at request time (no extra index needed) and return all cascade matches so HMVC overrides are visible.
+### Diagnostics
+
+- **Missing-view diagnostic** *(opt-in)* — set `diagnostics.missing_views = true` in `koseven-ls.toml` to get a Warning when `View::factory('name')` resolves to no file. Off by default to avoid noise during renames and file moves.
+
+**Cascade awareness**: reads `application/bootstrap.php` to discover enabled modules and their load order. `Kohana::modules([...])` must be a static array literal (dynamic/conditional loading is not supported).
 
 ## Installation
 

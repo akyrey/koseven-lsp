@@ -20,10 +20,14 @@ import (
 //  1. View name string — View::factory('x'), new View('x'), Kohana::find_file('views','x')
 //     → jump to view file(s) via the view index cascade.
 //
-//  2. ORM/Model factory — ORM::factory('Member'), Model::factory('Member')
+//  2. Route/controller/action — Route::set()->defaults([...]), Route::url(...),
+//     Request::factory()->controller()->action(), configured route_helpers
+//     → jump to classes/Controller/<Name>.php, optionally at the action method line.
+//
+//  3. ORM/Model factory — ORM::factory('Member'), Model::factory('Member')
 //     → jump to classes/Model/Member.php in the cascade.
 //
-//  3. Kohana::find_file for non-view types — find_file('classes','Model_X'),
+//  4. Kohana::find_file for non-view types — find_file('classes','Model_X'),
 //     find_file('i18n','en'), find_file('messages','user'), find_file('config','database')
 //     → jump to <type>/<resolved_path> in the cascade.
 func (s *Server) Definition(_ *glsp.Context, p *protocol.DefinitionParams) (any, error) {
@@ -48,13 +52,24 @@ func (s *Server) Definition(_ *glsp.Context, p *protocol.DefinitionParams) (any,
 		}
 	}
 
-	// Patterns 2 & 3 need the cascade state for direct filesystem lookups.
+	// Patterns 2–5 need the cascade state for direct filesystem lookups.
 	root, cfg, modules := s.cascadeState()
 	if root == "" {
 		return nil, nil
 	}
 
-	// Pattern 2: ORM::factory / Model::factory.
+	// Pattern 2: Route/controller/action navigation.
+	if m, ok := findRouteAtOffset(src, path, offset, cfg.RouteHelpers); ok {
+		action := ""
+		if m.CursorOn == "action" {
+			action = m.Action
+		}
+		if locs := locateControllerAction(root, cfg, modules, m.Controller, action, m.Directory); len(locs) > 0 {
+			return locs, nil
+		}
+	}
+
+	// Pattern 3: ORM::factory / Model::factory.
 	if className, relPath := findClassFactoryAtOffset(src, path, offset); relPath != "" {
 		_ = className
 		if locs := cascadeLocs(root, cfg, modules, "classes", relPath); len(locs) > 0 {

@@ -19,9 +19,11 @@ const diagSource = "koseven-lsp"
 // When enabled, it emits a Warning for every view name that resolves to no
 // file in the cascade.
 func publishViewDiagnostics(ctx *glsp.Context, uri protocol.DocumentUri, src []byte, path string, idx view.Index, cfg config.Config) {
-	var diags []protocol.Diagnostic
-	if cfg.Diagnostics.MissingViews && idx != nil && len(src) > 0 {
-		diags = collectMissingViewDiags(src, path, idx)
+	diags := []protocol.Diagnostic{}
+	if idx != nil && len(src) > 0 && cfg.Diagnostics.MissingViews {
+		if collected := collectMissingViewDiags(src, path, idx); collected != nil {
+			diags = collected
+		}
 	}
 	ctx.Notify(
 		string(protocol.ServerTextDocumentPublishDiagnostics),
