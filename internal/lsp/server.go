@@ -287,13 +287,28 @@ func (s *Server) watchLoop(w *fsnotify.Watcher, root string) {
 
 func (s *Server) reindexFiles(root string, paths []string) {
 	s.mu.RLock()
-	curr, cfg := s.viewIdx, s.cfg
+	curr, cfg, modules := s.viewIdx, s.cfg, s.modules
 	s.mu.RUnlock()
 
 	concreteIdx, ok := curr.(*view.ViewIndex)
 	if !ok || concreteIdx == nil {
 		s.reindex(root, cfg)
 		return
+	}
+
+	// View definition files (under a views/ root) require a full Walk when they
+	// change: incremental reindex only updates usages, not the byName/byPath
+	// definition maps. Two cases:
+	//   • NamesForFile non-empty → existing view file deleted or renamed away.
+	//   • isViewDefinitionPath → new view file created or renamed into place.
+	// A full Walk also saves a fresh cache so the next cold-start is fast.
+	viewRoots := project.BuildViewRoots(root, cfg, modules)
+	for _, path := range paths {
+		if len(concreteIdx.NamesForFile(path)) > 0 || isViewDefinitionPath(path, viewRoots) {
+			s.log.Infof("koseven-lsp: view definition changed (%s) — triggering full reindex", path)
+			s.reindex(root, cfg)
+			return
+		}
 	}
 
 	next := concreteIdx
@@ -313,6 +328,21 @@ func (s *Server) reindexFiles(root string, paths []string) {
 		s.mu.Unlock()
 	}
 	s.log.Infof("koseven-lsp: incremental reindex complete (%d files)", len(paths))
+}
+
+// isViewDefinitionPath reports whether path lives under any view root in the
+// cascade, meaning it is (or would become) a view definition file.
+func isViewDefinitionPath(path string, viewRoots []project.ViewRoot) bool {
+	if !strings.HasSuffix(path, ".php") {
+		return false
+	}
+	for _, vr := range viewRoots {
+		rel, err := filepath.Rel(vr.Path, path)
+		if err == nil && !strings.HasPrefix(rel, "..") {
+			return true
+		}
+	}
+	return false
 }
 
 
