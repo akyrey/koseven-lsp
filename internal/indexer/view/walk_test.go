@@ -246,7 +246,7 @@ func TestReindexFile_PreservesOtherUsages(t *testing.T) {
 
 	// Reindex the controller file — usages should still be present afterwards.
 	controllerPath := filepath.Join(root, "application", "classes", "Controller", "Pages.php")
-	updated, err := view.ReindexFile(controllerPath, old)
+	updated, err := view.ReindexFile(controllerPath, old, nil)
 	require.NoError(t, err)
 	assert.NotEmpty(t, updated.UsagesOf("pages/about"),
 		"usages should survive a clean ReindexFile of the same file")
@@ -262,7 +262,7 @@ func TestReindexFile_MissingFile(t *testing.T) {
 
 	// ReindexFile on a non-existent file should remove its entries (none here)
 	// and not error.
-	_, err = view.ReindexFile("/nonexistent/gone.php", old)
+	_, err = view.ReindexFile("/nonexistent/gone.php", old, nil)
 	require.NoError(t, err)
 }
 
@@ -352,6 +352,11 @@ func copyDir(t *testing.T, src, dst string) {
 			return err
 		}
 		target := filepath.Join(dst, rel)
+		// Skip the fixture's own cache: other tests write it asynchronously
+		// (index.gob.tmp → rename), and a copied cache defeats the test anyway.
+		if d.IsDir() && d.Name() == ".cache" {
+			return filepath.SkipDir
+		}
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}

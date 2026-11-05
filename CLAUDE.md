@@ -46,23 +46,28 @@ cmd/koseven-lsp/main.go             # entry point only — no logic here
 internal/
   config/
     config.go                       # Config struct + Load() + Defaults() + RouteHelper
+  indexer/route/
+    ref.go                          # Ref/Field types, ControllerClassName, ClassKey, ActionFromMethod
+    extract.go                      # Extract() — all controller/action call sites in a file
   indexer/view/
-    types.go                        # ViewDefinition, ViewUsage, ExposedVar, PHPType, Index iface
+    types.go                        # ViewDefinition, ViewUsage, ControllerRef, ExposedVar, PHPType, Index iface
     index.go                        # ViewIndex — concrete Index implementation + withoutFile()
     walk.go                         # Walk() + ReindexFile() + discoverViews + extractDir
     extract.go                      # extractVisitor + tryExtractChain + inferType + resolveScope
+    controller_refs.go              # route.Ref → ControllerRef conversion (UTF-16 ranges)
     cache.go                        # disk cache: tryLoadCache, saveCache, manifest validation
     gitignore.go                    # ignoreEntry, tryLoadIgnoreFile, isIgnored
   lsp/
     server.go                       # Server struct — cascadeState(), reindex(), reindexFiles(), watcher
     definition.go                   # textDocument/definition — view, routes, ORM::factory, find_file
-    references.go                   # textDocument/references — view-file mode + string mode
+    references.go                   # textDocument/references — view string, route string, view-file, controller decl
+    controller_refs.go              # controller/action decl finder + ControllerRef → Location
     hover.go                        # textDocument/hover — view hover + $var type hover
     completion.go                   # textDocument/completion — $var list in view files
     diagnostics.go                  # textDocument/publishDiagnostics — missing-view opt-in
     symbols.go                      # workspace/symbol — view name fuzzy search
     rename.go                       # textDocument/rename + prepareRename + workspace/willRenameFiles
-    routes.go                       # route/controller/action go-to-def finders + locateControllerAction
+    routes.go                       # findRouteAtOffset (via route.Extract) + locateControllerAction
     codeaction.go                   # textDocument/codeAction — rename view code action
     handlers.go                     # textDocument/documentSymbol — view name + var children + full-file range
     documents.go                    # DocumentStore — in-memory cache with disk fallback
@@ -256,28 +261,35 @@ new index where `byName`/`byPath` are shared (definitions), only `usages` is
 filtered. This is safe because `ReindexFile` only updates usages; view file
 creation/deletion requires a full `Walk`.
 
-**Route/controller navigation** (`internal/lsp/routes.go`):
+**Route/controller navigation** (`internal/indexer/route` + `internal/lsp/routes.go`):
 
-Four call-site finders are run in order by `findRouteAtOffset`; first match wins:
+`route.Extract(path, ast, helpers)` is the single source of truth for controller/action
+call sites. It returns `[]route.Ref`, each with `Controller`/`Action`/`Directory`
+`Field`s (string value + byte-offset `phputil.Location`). Recognised constructs:
 
-1. `routeDefaultsFinder` — `Route::set(...)->defaults([...])`. Walks the `Var` chain
-   via `isRouteSetRoot` to handle intermediate calls like `->filter(...)`. Extracts
-   `controller`/`action`/`directory` keys from the defaults array; records which key
-   contains the cursor.
+1. `Route::set(...)->defaults([...])` — `isRouteSetRoot` walks the `Var` chain so
+   intermediate calls like `->filter(...)` are allowed.
+2. `Route::url('name', [...])` — params array is the second argument.
+3. `Route::get('name')->uri([...])` — params array is the first argument.
+4. `Request::<any>()->directory()->controller()->action()` — the whole chain is
+   read at its outermost call (DFS pre-order); `seenRequest` keyed on the chain
+   root's `StartPos` stops inner calls from producing duplicates. Getter calls
+   (no args) yield no fields and no ref.
+5. Configured `Config.RouteHelpers` — static call or global function, positional args.
 
-2. `routeURLFinder` — `Route::url('name', [...])`. Same array extraction from the
-   second argument.
+Two consumers:
+- **Go-to-definition**: `findRouteAtOffset` re-parses the open buffer, runs
+  `route.Extract`, and returns the ref whose field literal contains the cursor.
+- **Find-references**: the view `Walk`/`ReindexFile` pass also stores every ref
+  with a controller as a `view.ControllerRef` (class + action + precomputed UTF-16
+  ranges) in `ViewIndex.controllerRefs`, keyed by `route.ClassKey` (lower-cased
+  class name — PHP class/method names are case-insensitive). `References` mode 4
+  uses `findControllerDeclAtOffset` (cursor on `class Controller_*` name or an
+  `action_*` method name) to pick the target. Refs are attributed to the class the
+  call site names; an action inherited from a parent controller is not mapped back.
 
-3. `requestFactoryFinder` — `Request::factory()->controller('x')->action('y')`.
-   Confirms the chain roots at a `Request` static call via `chainVarRoot` +
-   `isRequestChainRoot`. Cursor on `action('y')` walks upstream via
-   `chainMethodString(n.Var, "controller")` to find the sibling controller value.
-   Cursor on `controller('x')` only resolves the controller file (action is downstream,
-   not accessible via `Var`).
-
-4. `routeHelperFinder` — user-configured helpers from `Config.RouteHelpers`. Matches
-   `ExprStaticCall` (class::method) or `ExprFunctionCall` (global function) by name.
-   Captures values from the configured positional arg indices.
+`ReindexFile` takes the route helpers as a parameter — pass `cfg.RouteHelpers` so
+incremental updates match the full `Walk`.
 
 **Shared resolver** — `locateControllerAction(root, cfg, modules, controller, action, directory)`:
 - Builds class name: `Controller_[Dir_]Ctrl` via `buildControllerClassName` +
@@ -289,7 +301,7 @@ Four call-site finders are run in order by `findRouteAtOffset`; first match wins
 
 **Definition dispatch order** (definition.go):
 1. View names (index-based)
-2. Route/controller/action (routes.go finders)
+2. Route/controller/action (`findRouteAtOffset` → `route.Extract`)
 3. ORM/Model factory
 4. `Kohana::find_file` non-view
 5. `Kohana::message`
@@ -300,7 +312,10 @@ or bare function name) and `*int` pointer fields `Controller`, `Action`, `Direct
 TOML blocks.
 
 **Index cache** (`internal/indexer/view/cache.go`): persisted to
-`<root>/.cache/koseven-ls/index.gob`. Invalidated when any manifest entry (file or
+`<root>/.cache/koseven-ls/index.gob`. Stores definitions, usages, globals and
+controller refs; bump `cacheVersion` whenever any cached type changes. `configHash`
+hashes `RouteHelpers` by value (their `*int` fields would otherwise hash as
+pointer addresses and invalidate the cache on every start). Invalidated when any manifest entry (file or
 directory visited during Walk) has a changed `ModTime`, or when the config hash changes.
 Saved asynchronously after each full `Walk`. View definition file changes (rename,
 creation) trigger a full `Walk` (not incremental reindex) so the cache is refreshed.

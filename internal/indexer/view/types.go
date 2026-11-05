@@ -3,6 +3,7 @@ package view
 import (
 	protocol "github.com/tliron/glsp/protocol_3_16"
 
+	"github.com/akyrey/koseven-lsp/internal/indexer/route"
 	"github.com/akyrey/koseven-lsp/internal/project"
 )
 
@@ -19,8 +20,8 @@ type RootKind = project.RootKind
 
 // ViewDefinition is a resolved view file on disk.
 type ViewDefinition struct {
-	Name       string          // logical name, e.g. "pages/about"
-	Path       string          // absolute path to views/pages/about.php
+	Name       string // logical name, e.g. "pages/about"
+	Path       string // absolute path to views/pages/about.php
 	RootKind   project.RootKind
 	RootOrder  int    // position in cascade; lower = higher priority
 	ModuleName string // "" for application/system roots; module name otherwise
@@ -87,6 +88,18 @@ type ExposedVar struct {
 	Range  protocol.Range // location of the expression that set it
 }
 
+// ControllerRef is a call site that references a controller and optionally one
+// of its actions (Route defaults, Route::url, Request chains, route helpers).
+// It powers find-references from a controller class or action method.
+type ControllerRef struct {
+	Class           string         // targeted class, e.g. "Controller_Admin_Users"
+	Action          string         // action name without "action_" prefix; "" when not named
+	File            string         // absolute PHP file path containing the call site
+	Kind            route.Kind     // which construct produced the reference
+	ControllerRange protocol.Range // range of the controller string literal
+	ActionRange     protocol.Range // range of the action string literal; zero when Action == ""
+}
+
 // Index is the primary contract consumed by all three MVP LSP features.
 // Implementations must be safe for concurrent reads.
 type Index interface {
@@ -110,4 +123,8 @@ type Index interface {
 	// AllDefinitions returns all known view definitions for workspace/symbol
 	// and document symbol providers.
 	AllDefinitions() []ViewDefinition
+
+	// ControllerRefs returns every call site that targets the controller class
+	// (case-insensitive), across all of its actions.
+	ControllerRefs(className string) []ControllerRef
 }

@@ -17,4 +17,11 @@ class Controller_Pages extends Controller {
         $path = Kohana::find_file('views', 'pages/about');
         $this->response->body(View::factory('pages/about'));
     }
+
+    public function action_admin_widget()
+    {
+        // HMVC sub-request into Controller_Admin_Users::action_edit.
+        $body = Request::factory()->directory('admin')->controller('users')->action('edit')->execute()->body();
+        $this->response->body($body);
+    }
 }

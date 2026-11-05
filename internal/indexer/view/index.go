@@ -1,6 +1,10 @@
 package view
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/akyrey/koseven-lsp/internal/indexer/route"
+)
 
 // ViewIndex is the concrete, thread-safe implementation of Index.
 // The byName and byPath maps (view file definitions) are rebuilt only by
@@ -12,6 +16,8 @@ type ViewIndex struct {
 	byPath  map[string][]string         // absolute view file path → []viewName
 	usages  map[string][]ViewUsage      // viewName → []ViewUsage
 	globals []ExposedVar                // from View::set_global / View::bind_global
+
+	controllerRefs map[string][]ControllerRef // route.ClassKey(class) → call sites
 }
 
 // NewViewIndex returns an empty, ready-to-use ViewIndex.
@@ -20,6 +26,8 @@ func NewViewIndex() *ViewIndex {
 		byName: make(map[string][]ViewDefinition),
 		byPath: make(map[string][]string),
 		usages: make(map[string][]ViewUsage),
+
+		controllerRefs: make(map[string][]ControllerRef),
 	}
 }
 
@@ -85,6 +93,13 @@ func (idx *ViewIndex) AllDefinitions() []ViewDefinition {
 	return all
 }
 
+// ControllerRefs implements Index.
+func (idx *ViewIndex) ControllerRefs(className string) []ControllerRef {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.controllerRefs[route.ClassKey(className)]
+}
+
 // addDefinition adds a view definition. Not safe for concurrent use; call
 // only during index construction before the index is shared.
 func (idx *ViewIndex) addDefinition(def ViewDefinition) {
@@ -96,6 +111,13 @@ func (idx *ViewIndex) addDefinition(def ViewDefinition) {
 // during index construction or under external synchronisation.
 func (idx *ViewIndex) addUsage(u ViewUsage) {
 	idx.usages[u.Name] = append(idx.usages[u.Name], u)
+}
+
+// addControllerRef records a controller/action call site. Same concurrency
+// rules as addUsage.
+func (idx *ViewIndex) addControllerRef(r ControllerRef) {
+	key := route.ClassKey(r.Class)
+	idx.controllerRefs[key] = append(idx.controllerRefs[key], r)
 }
 
 // addGlobal records a globally exposed variable.
@@ -117,17 +139,29 @@ func (idx *ViewIndex) withoutFile(path string) *ViewIndex {
 		byPath:  idx.byPath,
 		globals: idx.globals,
 		usages:  make(map[string][]ViewUsage, len(idx.usages)),
+
+		controllerRefs: make(map[string][]ControllerRef, len(idx.controllerRefs)),
 	}
 	for name, us := range idx.usages {
-		filtered := us[:0:0]
-		for _, u := range us {
-			if u.File != path {
-				filtered = append(filtered, u)
-			}
-		}
-		if len(filtered) > 0 {
+		if filtered := filterByFile(us, path, func(u ViewUsage) string { return u.File }); len(filtered) > 0 {
 			next.usages[name] = filtered
 		}
 	}
+	for key, refs := range idx.controllerRefs {
+		if filtered := filterByFile(refs, path, func(r ControllerRef) string { return r.File }); len(filtered) > 0 {
+			next.controllerRefs[key] = filtered
+		}
+	}
 	return next
+}
+
+// filterByFile returns a new slice holding the items whose file is not path.
+func filterByFile[T any](items []T, path string, fileOf func(T) string) []T {
+	filtered := items[:0:0]
+	for _, it := range items {
+		if fileOf(it) != path {
+			filtered = append(filtered, it)
+		}
+	}
+	return filtered
 }

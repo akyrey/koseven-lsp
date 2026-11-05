@@ -29,29 +29,6 @@ func byteOffsetToPosition(src []byte, offset int) protocol.Position {
 	return protocol.Position{Line: line, Character: col}
 }
 
-// ─── titleCaseSegments ────────────────────────────────────────────────────────
-
-func TestTitleCaseSegments(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"pages", "Pages"},
-		{"auth_user", "Auth_User"},
-		{"admin", "Admin"},
-		{"Pages", "Pages"},
-		{"", ""},
-	}
-	for _, c := range cases {
-		assert.Equal(t, c.want, titleCaseSegments(c.in), "input=%q", c.in)
-	}
-}
-
-// ─── buildControllerClassName ─────────────────────────────────────────────────
-
-func TestBuildControllerClassName(t *testing.T) {
-	assert.Equal(t, "Controller_Pages", buildControllerClassName("pages", ""))
-	assert.Equal(t, "Controller_Admin_Users", buildControllerClassName("users", "admin"))
-	assert.Equal(t, "Controller_Api_V1_Posts", buildControllerClassName("posts", "api_v1"))
-}
-
 // ─── findActionMethodLine ─────────────────────────────────────────────────────
 
 func TestFindActionMethodLine_Found(t *testing.T) {
@@ -247,8 +224,8 @@ func TestRequestFactoryFinder_CursorOnController(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "pages", m.Controller)
 	assert.Equal(t, "controller", m.CursorOn)
-	// Action is downstream — not available when cursor is on controller.
-	assert.Equal(t, "", m.Action)
+	// The whole chain is extracted, so the downstream action is known too.
+	assert.Equal(t, "about", m.Action)
 }
 
 func TestRequestFactoryFinder_CursorOnAction(t *testing.T) {

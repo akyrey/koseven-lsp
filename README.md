@@ -9,7 +9,7 @@ Generic PHP language servers (Intelephense, Psalm) have no knowledge of Koseven'
 ### View navigation
 
 - **Go-to-definition on view names** — cursor on `'pages/about'` inside `View::factory('pages/about')` or `new View('pages/about', ...)` jumps to the resolved `.php` file. Returns all candidates when the same name exists in multiple modules (HMVC cascade).
-- **Find-references** — open `application/views/pages/about.php` and request references to see every `View::factory`, `new View`, and `Kohana::find_file('views', ...)` call that constructs it. Also works from a PHP file: cursor on a view name string returns all other call sites. Locations point to the string literal, not the full expression.
+- **Find-references** — open `application/views/pages/about.php` and request references (with the cursor anywhere that isn't itself a view-name or route string) to see every `View::factory`, `new View`, and `Kohana::find_file('views', ...)` call that constructs it. Also works from a PHP file: cursor on a view name string returns all other call sites. Locations point to the string literal, not the full expression.
 - **Inferred view variables** — hover on `$var` inside a view to see its inferred type and originating call sites. `$` completion lists all variables exposed via `->set()`, `->bind()`, the factory second-argument array, `set_global`, and `bind_global`.
 - **Hover on view names** — cursor on a view name string shows the resolved file path, cascade order, and module for each candidate.
 - **Document symbols** — `:Telescope lsp_document_symbols` (or equivalent) inside a view file shows the view name with all its exposed variables as children, including inferred types.
@@ -35,7 +35,7 @@ Scope is reset per function/method/closure boundary so variables from one method
 ### Route and controller navigation
 
 - **`Route::set()->defaults([...])`** — cursor on the `'controller'` value jumps to `classes/Controller/<Name>.php`. Cursor on the `'action'` value jumps directly to the `action_<name>()` method line. The optional `'directory'` key supports HMVC sub-controllers (e.g. `Controller_Admin_Users`).
-- **`Route::url('name', [...])`** — same navigation from the params array passed to `url()`.
+- **`Route::url('name', [...])`** / **`Route::get('name')->uri([...])`** — same navigation from the params array.
 - **`Request::factory()->controller('x')->action('y')`** — cursor on either string navigates to the controller file or action method.
 - **Custom helpers** — configure any static method or global function that takes controller/action as positional string arguments (see [Configuration](#configuration) below).
 
@@ -52,6 +52,14 @@ Skp_Helper::getWidget('pages', 'about');  // configured in koseven-ls.toml
 ```
 
 Cascade-aware: returns all matching locations when the same controller exists in multiple layers.
+
+**Reverse navigation (find-references)** — see every place that links to a controller or action:
+
+- Cursor on an `action_<name>()` method name in a controller → every `Route::set()->defaults()`, `Route::url()`, `Route::get()->uri()`, `Request::factory()->controller()->action()` and configured helper call that targets that action. Locations point at the action string literal.
+- Cursor on the controller class name (`class Controller_Pages`) → every call site targeting the controller, any action.
+- Cursor on a controller/action string in any of those call sites → all sibling call sites for the same controller/action.
+
+Lookups are case-insensitive and HMVC-aware (`'directory' => 'admin', 'controller' => 'users'` matches `Controller_Admin_Users`). Call sites whose controller/action are variables, or that rely on a route's default controller, can't be resolved statically and are not listed.
 
 ### Rename and file operations
 

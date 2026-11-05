@@ -14,7 +14,7 @@ import (
 
 // cacheVersion must be incremented whenever cacheData or any type it embeds
 // changes in a way that would make an old cache unreadable.
-const cacheVersion = 1
+const cacheVersion = 2
 
 // cacheData is the on-disk representation of a ViewIndex plus the metadata
 // required to validate that it is still current.
@@ -25,6 +25,8 @@ type cacheData struct {
 	Definitions []ViewDefinition
 	Usages      []ViewUsage
 	Globals     []ExposedVar
+
+	ControllerRefs []ControllerRef
 }
 
 // statEntry records the path and modification time of a file or directory
@@ -48,11 +50,25 @@ func cachePath(root string) string {
 // Any change that would produce a different index must change this hash.
 func configHash(cfg config.Config, modules []project.Module) string {
 	h := fnv.New64a()
+	// Hash RouteHelpers separately: their *int fields would otherwise print as
+	// pointer addresses, changing the hash on every process start.
+	helpers := cfg.RouteHelpers
+	cfg.RouteHelpers = nil
 	fmt.Fprintf(h, "%+v", cfg)
+	for _, rh := range helpers {
+		fmt.Fprintf(h, "|%s:%s:%s:%s", rh.Name, intPtrString(rh.Controller), intPtrString(rh.Action), intPtrString(rh.Directory))
+	}
 	for _, m := range modules {
 		fmt.Fprintf(h, "%s:%s", m.Name, m.Path)
 	}
 	return fmt.Sprintf("%016x", h.Sum64())
+}
+
+func intPtrString(p *int) string {
+	if p == nil {
+		return "-"
+	}
+	return fmt.Sprint(*p)
 }
 
 // tryLoadCache loads the cached index when it exists and its manifest is still
@@ -92,6 +108,9 @@ func tryLoadCache(root string, cfg config.Config, modules []project.Module) *Vie
 	for _, g := range cd.Globals {
 		idx.addGlobal(g)
 	}
+	for _, r := range cd.ControllerRefs {
+		idx.addControllerRef(r)
+	}
 	return idx
 }
 
@@ -114,6 +133,10 @@ func saveCache(root string, cfg config.Config, modules []project.Module, idx *Vi
 	}
 	globals := make([]ExposedVar, len(idx.globals))
 	copy(globals, idx.globals)
+	var refs []ControllerRef
+	for _, rs := range idx.controllerRefs {
+		refs = append(refs, rs...)
+	}
 	idx.mu.RUnlock()
 
 	cd := cacheData{
@@ -123,6 +146,8 @@ func saveCache(root string, cfg config.Config, modules []project.Module, idx *Vi
 		Definitions: defs,
 		Usages:      usages,
 		Globals:     globals,
+
+		ControllerRefs: refs,
 	}
 
 	tmp := cachePath(root) + ".tmp"

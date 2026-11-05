@@ -69,13 +69,13 @@ func (s *Server) Initialize(_ *glsp.Context, p *protocol.InitializeParams) (any,
 	ver := s.version
 	return protocol.InitializeResult{
 		Capabilities: protocol.ServerCapabilities{
-			TextDocumentSync:       syncKind,
-			DefinitionProvider:     true,
-			ReferencesProvider:     true,
-			HoverProvider:          true,
-			CompletionProvider:     &protocol.CompletionOptions{},
+			TextDocumentSync:        syncKind,
+			DefinitionProvider:      true,
+			ReferencesProvider:      true,
+			HoverProvider:           true,
+			CompletionProvider:      &protocol.CompletionOptions{},
 			DocumentSymbolProvider:  true,
-			WorkspaceSymbolProvider:  true,
+			WorkspaceSymbolProvider: true,
 			RenameProvider: &protocol.RenameOptions{
 				PrepareProvider: boolPtr(true),
 			},
@@ -314,7 +314,7 @@ func (s *Server) reindexFiles(root string, paths []string) {
 	next := concreteIdx
 	var failed bool
 	for _, path := range paths {
-		updated, err := view.ReindexFile(path, next)
+		updated, err := view.ReindexFile(path, next, cfg.RouteHelpers)
 		if err != nil {
 			s.log.Errorf("koseven-lsp: reindex %s: %v", path, err)
 			failed = true
@@ -344,7 +344,6 @@ func isViewDefinitionPath(path string, viewRoots []project.ViewRoot) bool {
 	}
 	return false
 }
-
 
 func hasWatchExt(name string) bool {
 	for _, ext := range watchExts {

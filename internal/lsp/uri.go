@@ -110,4 +110,3 @@ func positionToByteOffset(src []byte, pos protocol.Position) int {
 	}
 	return offset
 }
-

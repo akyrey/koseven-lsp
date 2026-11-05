@@ -20,7 +20,9 @@ import (
 //     as a ViewDefinition keyed by its logical name.
 //  2. Usage extraction: walk all PHP source files and extract ViewUsage entries
 //     by finding View::factory, new View, and Kohana::find_file('views', ...)
-//     call sites with their chained set/bind variable exposures.
+//     call sites with their chained set/bind variable exposures. The same pass
+//     records controller/action references (Route defaults, Route::url,
+//     Request chains, configured route helpers) for reverse navigation.
 //
 // Both phases respect .gitignore files found at root and inside walked
 // directories, so vendor trees and generated code are skipped automatically.
@@ -51,7 +53,7 @@ func Walk(root string, cfg config.Config, modules []project.Module) (*ViewIndex,
 
 	// Phase 2: extract view usages from PHP source files.
 	for _, dir := range project.PHPScanDirs(root, cfg, modules) {
-		if err := extractDir(dir, idx, initMatchers, &manifest); err != nil {
+		if err := extractDir(dir, idx, cfg.RouteHelpers, initMatchers, &manifest); err != nil {
 			fmt.Fprintf(os.Stderr, "koseven-lsp: usage scan %s: %v\n", dir, err)
 		}
 	}
@@ -89,8 +91,11 @@ func appendStat(manifest *[]statEntry, path string, d fs.DirEntry) {
 // Note: changes to View::set_global / View::bind_global in path will NOT be
 // reflected until a full Walk; globals are not tracked per-file.
 //
+// helpers are the configured route helpers used to detect controller/action
+// references; pass the same value that was used for Walk.
+//
 // Returns old unchanged on parse error so the caller can keep the last good state.
-func ReindexFile(path string, old *ViewIndex) (*ViewIndex, error) {
+func ReindexFile(path string, old *ViewIndex, helpers []config.RouteHelper) (*ViewIndex, error) {
 	if old == nil {
 		return nil, fmt.Errorf("view: nil index passed to ReindexFile")
 	}
@@ -111,6 +116,9 @@ func ReindexFile(path string, old *ViewIndex) (*ViewIndex, error) {
 
 	for _, u := range ev.usages {
 		next.addUsage(u)
+	}
+	for _, r := range extractControllerRefs(path, astRoot, src, helpers) {
+		next.addControllerRef(r)
 	}
 	// Globals are not updated here; see function doc.
 
@@ -161,11 +169,12 @@ func discoverViews(vr project.ViewRoot, idx *ViewIndex, initMatchers []ignoreEnt
 	})
 }
 
-// extractDir walks dir and extracts view usages from every .php file found.
+// extractDir walks dir and extracts view usages and controller references from
+// every .php file found.
 // Parse errors are logged to stderr and skipped; they don't abort the walk.
 // Directories and files matched by any gitignore in matchers are skipped.
 // Every visited entry is appended to manifest for cache validation.
-func extractDir(dir string, idx *ViewIndex, initMatchers []ignoreEntry, manifest *[]statEntry) error {
+func extractDir(dir string, idx *ViewIndex, helpers []config.RouteHelper, initMatchers []ignoreEntry, manifest *[]statEntry) error {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return nil
 	}
@@ -205,6 +214,9 @@ func extractDir(dir string, idx *ViewIndex, initMatchers []ignoreEntry, manifest
 		}
 		for _, g := range globals {
 			idx.addGlobal(g)
+		}
+		for _, r := range extractControllerRefs(path, astRoot, src, helpers) {
+			idx.addControllerRef(r)
 		}
 		return nil
 	})
