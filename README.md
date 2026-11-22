@@ -163,6 +163,17 @@ action     = 1
 
 The index is persisted to `.cache/koseven-ls/index.gob` in the project root after each full walk. Subsequent server starts load from this cache and skip re-parsing when no files have changed. Add `.cache/koseven-ls/` to your `.gitignore`.
 
+### Logging
+
+The server logs to stderr, which editors record in their LSP log (Neovim records all of it at ERROR level). By default only warnings and errors are written. Set `KOSEVEN_LSP_LOG_VERBOSITY` to see more while debugging:
+
+| Value | Logs |
+| ----- | ---- |
+| `-4` | nothing |
+| `-3` / `-2` | critical / errors |
+| `-1` | warnings and errors (default) |
+| `0` / `1` / `2` | notice / info / debug |
+
 ## Project layout
 
 ```
@@ -170,6 +181,7 @@ cmd/koseven-lsp/    entry point
 internal/
   config/           koseven-ls.toml loader
   indexer/view/     view index: Walk, ReindexFile, extract, types, Index interface
+  logging/          stderr log verbosity (KOSEVEN_LSP_LOG_VERBOSITY)
   lsp/              LSP server, definition, references, hover, completion, handlers
   phpparse/         VKCOM php-parser wrapper
   phputil/          AST helpers (ArgExpr, ScalarStringVal, FQN, Location)

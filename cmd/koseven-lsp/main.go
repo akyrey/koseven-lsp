@@ -1,11 +1,14 @@
 package main
 
 import (
+	"os"
+
 	"github.com/tliron/commonlog"
 	_ "github.com/tliron/commonlog/simple"
 	protocol "github.com/tliron/glsp/protocol_3_16"
 	"github.com/tliron/glsp/server"
 
+	"github.com/akyrey/koseven-lsp/internal/logging"
 	"github.com/akyrey/koseven-lsp/internal/lsp"
 )
 
@@ -14,9 +17,9 @@ const lsName = "koseven-lsp"
 var version = "0.0.0-dev"
 
 func main() {
-	// Log at level 1 (info) to stderr. Editors forward stderr to their
-	// developer console or log file.
-	commonlog.Configure(1, nil)
+	// Log to stderr, warnings and errors only unless KOSEVEN_LSP_LOG_VERBOSITY
+	// says otherwise; see internal/logging.
+	commonlog.Configure(logging.Verbosity(os.Getenv), nil)
 
 	s := lsp.NewServer(commonlog.GetLogger(lsName), version)
 	handler := buildHandler(s)

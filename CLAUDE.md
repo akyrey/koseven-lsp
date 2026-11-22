@@ -57,6 +57,8 @@ internal/
     controller_refs.go              # route.Ref → ControllerRef conversion (UTF-16 ranges)
     cache.go                        # disk cache: tryLoadCache, saveCache, manifest validation
     gitignore.go                    # ignoreEntry, tryLoadIgnoreFile, isIgnored
+  logging/
+    logging.go                      # Verbosity() — stderr log level from KOSEVEN_LSP_LOG_VERBOSITY (default: warnings)
   lsp/
     server.go                       # Server struct — cascadeState(), reindex(), reindexFiles(), watcher
     definition.go                   # textDocument/definition — view, routes, ORM::factory, find_file
